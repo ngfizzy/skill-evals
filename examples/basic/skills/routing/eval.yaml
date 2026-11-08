@@ -1,0 +1,9 @@
+skill: routing
+behaviors:
+  - name: Route a documentation typo
+    given: A change fixes a typo in a README. Which review route would you choose?
+    must:
+      - Selects Routine review.
+      - Keeps the proposed review bounded to the changed text.
+    must_not:
+      - Claims a real review has already been completed.

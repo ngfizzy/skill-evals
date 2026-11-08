@@ -1,0 +1,79 @@
+{
+  "name": "skill-evals",
+  "version": "0.1.0",
+  "description": "Response-only behavioral evaluations for agent skills, with isolated Codex candidate and judge sessions.",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "bin": {
+    "skill-evals": "src/cli.ts"
+  },
+  "files": [
+    "src/cli.ts",
+    "src/adaptors/*.ts",
+    "src/catalog/*.ts",
+    "src/display/*.ts",
+    "src/display/*.tsx",
+    "src/display/components/*.ts",
+    "src/display/components/*.tsx",
+    "src/display/contexts/*.ts",
+    "src/display/hooks/*.ts",
+    "src/evaluation/*.ts",
+    "src/judge/*.ts",
+    "src/operator/*.ts",
+    "src/process/*.ts",
+    "src/prompts/*.ts",
+    "src/report/*.ts",
+    "src/runner/*.ts",
+    "src/utils/files.ts",
+    "src/utils/index.ts",
+    "src/utils/message.ts",
+    "src/utils/sha256.ts",
+    "src/utils/terminal-text.ts",
+    "src/utils/validation.ts",
+    "tsconfig.json",
+    "bunfig.toml",
+    "examples/",
+    "docs/",
+    "PROVENANCE.md"
+  ],
+  "engines": {
+    "bun": ">=1.4.4"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ngfizzy/skill-evals.git"
+  },
+  "scripts": {
+    "start": "bun --no-env-file src/cli.ts",
+    "format": "bun --no-env-file --bun prettier --write .",
+    "format:check": "bun --no-env-file --bun prettier --check .",
+    "check": "bun --no-env-file check --no-script",
+    "test": "bun --no-env-file test tests",
+    "pack:check": "bun --no-env-file scripts/check-pack.ts",
+    "install:check": "bun --no-env-file scripts/check-install.ts",
+    "audit:codex": "bun --no-env-file scripts/audit-codex.ts",
+    "parity:ruby": "bun --no-env-file scripts/compare-ruby.ts"
+  },
+  "dependencies": {
+    "@openai/codex": "0.165.0",
+    "@opentui/core": "0.8.1",
+    "@opentui/react": "0.8.1",
+    "react": "19.3.1",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "19.3.0",
+    "prettier": "3.9.10",
+    "typescript": "^7.0.2"
+  },
+  "exports": {},
+  "packageManager": "bun@1.4.4"
+}

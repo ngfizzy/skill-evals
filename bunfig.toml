@@ -1,0 +1,5 @@
+# Preserve explicit environment inheritance instead of loading local .env files.
+env = false
+
+[install]
+auto = "disable"
