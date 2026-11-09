@@ -2,7 +2,6 @@ import test from 'node:test';
 import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { Catalog } from '../src/catalog/index.ts';
 import {
   EvaluationOrchestrator,
   EvaluationRunner,
@@ -14,7 +13,7 @@ import { withSummary } from '../src/report/index.ts';
 import type { ReportCheckpoint } from '../src/report/index.ts';
 import type { Agent } from '../src/adaptors/index.ts';
 
-import { fakeAgent, reportFixture, skill, temporary } from './helpers/fixture.ts';
+import { loadLocalCatalog, fakeAgent, reportFixture, skill, temporary } from './helpers/fixture.ts';
 
 const models = {
   operator: { model: 'operator-fixture', effort: 'medium' },
@@ -31,7 +30,7 @@ function createOrchestrator(adapter: Agent): EvaluationOrchestrator {
 async function prepareFixture(t: TestContext): Promise<PreparedCase[]> {
   const root = await temporary(t);
   await skill(root);
-  const entry = (await Catalog.load([root])).cases[0]!;
+  const entry = (await loadLocalCatalog([root])).cases[0]!;
   const bundle = 'Skill instructions';
   const first: PreparedCase = {
     entry,

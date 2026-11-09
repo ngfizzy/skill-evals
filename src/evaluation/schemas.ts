@@ -1,8 +1,23 @@
 import { z } from 'zod';
 
+import { canonicalGitUrl } from '../sources/index.ts';
+
+const LOWERCASE_SHA1_COMMIT_ID_PATTERN = /^[a-f0-9]{40}$/u;
+
 const text = z.string();
 const nonempty = text.refine((value) => value.trim().length > 0);
 const count = z.int().nonnegative();
+
+const gitSourceSchema = z.strictObject({
+  url: text.refine((url) => {
+    try {
+      return canonicalGitUrl(url) === url;
+    } catch {
+      return false;
+    }
+  }),
+  commit: text.regex(LOWERCASE_SHA1_COMMIT_ID_PATTERN),
+});
 
 const criterionSchema = z.object({
   id: nonempty,
@@ -69,6 +84,7 @@ export const reportSchema = z.object({
   reasoning_effort: text,
   judge_reasoning_effort: text,
   selected_cases: count,
+  git_sources: z.array(gitSourceSchema.readonly()).readonly().optional(),
   results: z.array(caseResultSchema.readonly()).readonly(),
 });
 

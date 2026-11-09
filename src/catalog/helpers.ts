@@ -1,10 +1,8 @@
-import { readdir, stat } from 'node:fs/promises';
-import { join } from 'node:path';
-
 import { parseDocument } from 'yaml';
 
 import type { Criterion } from '../evaluation/index.ts';
-import { array, containedPath, mapping, strings } from '../utils/index.ts';
+import type { SkillRoot } from '../sources/index.ts';
+import { array, mapping, strings } from '../utils/index.ts';
 
 export function criteria(values: unknown, required: boolean): Criterion[] {
   return strings(values).map((text) => ({ id: '', text, required }));
@@ -22,22 +20,22 @@ export function parseYaml(content: string): unknown {
 }
 
 export async function referenceFiles(
+  root: SkillRoot,
   directory: string,
-  owner: string,
   seen = new Set<string>(),
   budget = { count: 0 },
 ): Promise<string[]> {
-  const real = await containedPath(directory, owner);
-  if (seen.has(real)) throw new Error(`Reference directory cycle: ${directory}`);
-  seen.add(real);
+  const { identity, names } = await root.list(directory);
+  if (seen.has(identity)) throw new Error(`Reference directory cycle: ${root.source(directory)}`);
+  seen.add(identity);
 
   const result: string[] = [];
-  for (const name of (await readdir(real)).sort()) {
+  for (const name of [...names].sort()) {
     if (++budget.count > 10_000) throw new Error('Too many reference entries');
-    const path = join(directory, name);
-    const target = await containedPath(path, owner);
-    if ((await stat(target)).isDirectory())
-      result.push(...(await referenceFiles(path, owner, seen, budget)));
+    const path = `${directory}/${name}`;
+    const kind = await root.kind(path);
+    if (kind === 'missing') throw new Error(`Missing reference entry: ${root.source(path)}`);
+    if (kind === 'directory') result.push(...(await referenceFiles(root, path, seen, budget)));
     else if (name.endsWith('.md')) result.push(path);
   }
 
@@ -56,16 +54,28 @@ export function jsonCriteria(evaluation: Record<string, unknown>): Criterion[] {
   return [...criteria(explicit.must ?? [], true), ...criteria(explicit.must_not ?? [], false)];
 }
 
-export async function validateReference(reference: string, owner: string): Promise<void> {
+export async function validateReference(root: SkillRoot, reference: string): Promise<void> {
   if (
-    !/^references\/.+\.md$/.test(reference) ||
+    !MARKDOWN_REFERENCE_PATH_PATTERN.test(reference) ||
     reference.includes('\\') ||
     reference.split('/').some((part) => part === '..' || part === '.' || part === '')
   ) {
     throw new Error(`Invalid reference path: ${reference}`);
   }
 
-  const path = await containedPath(join(owner, reference), owner);
-  if (!(await stat(path)).isFile())
+  if ((await root.kind(reference)) !== 'file')
     throw new Error(`Reference must be a regular file: ${reference}`);
 }
+
+export function validateSkillName(name: string): void {
+  if (
+    !name.trim() ||
+    name === '.' ||
+    name === '..' ||
+    SKILL_NAME_SEPARATOR_OR_CONTROL_PATTERN.test(name)
+  )
+    throw new Error('Skill names must be single directory components');
+}
+
+const MARKDOWN_REFERENCE_PATH_PATTERN = /^references\/.+\.md$/;
+const SKILL_NAME_SEPARATOR_OR_CONTROL_PATTERN = /[/\\\x00-\x1f\x7f]/;

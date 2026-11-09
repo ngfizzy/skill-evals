@@ -35,6 +35,7 @@ const expected = [
   'src/catalog/catalog.ts',
   'src/catalog/helpers.ts',
   'src/catalog/index.ts',
+  'src/catalog/root.ts',
   'src/catalog/types.ts',
   'src/display/components/index.ts',
   ...[
@@ -109,6 +110,9 @@ const expected = [
   'src/runner/options.ts',
   'src/runner/runner.ts',
   'src/runner/types.ts',
+  ...['git-command', 'git-tree', 'git', 'index', 'input', 'local', 'resolve', 'types'].map(
+    (name) => `src/sources/${name}.ts`,
+  ),
   'src/utils/files.ts',
   'src/utils/index.ts',
   'src/utils/message.ts',
@@ -126,13 +130,12 @@ const expected = [
 
 assert.deepEqual(files, expected, 'Tarball content must match the reviewed allowlist exactly');
 
+const PRIVATE_MATERIAL_PATTERN =
+  /\/Users\/|Documents\/Codex|BEGIN (?:RSA |OPENSSH )?PRIVATE KEY|sk-(?:proj-)?[A-Za-z0-9_-]{24,}/;
+
 for (const path of files) {
   const content = readFileSync(path, 'utf8');
-  assert.doesNotMatch(
-    content,
-    /\/Users\/|Documents\/Codex|BEGIN (?:RSA |OPENSSH )?PRIVATE KEY|sk-(?:proj-)?[A-Za-z0-9_-]{24,}/,
-    `Private material in ${path}`,
-  );
+  assert.doesNotMatch(content, PRIVATE_MATERIAL_PATTERN, `Private material in ${path}`);
 }
 console.log(
   `Pack content check passed: ${files.length} reviewed files; no reports, tests, source workspaces or credentials.`,

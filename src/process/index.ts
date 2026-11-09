@@ -1,2 +1,2 @@
-export { MAX_OUTPUT, runProcess } from './process.ts';
+export { MAX_OUTPUT, ProcessTimeoutError, runProcess } from './process.ts';
 export type { ProcessOptions } from './types.ts';

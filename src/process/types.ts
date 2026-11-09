@@ -3,4 +3,6 @@ export interface ProcessOptions {
   timeoutMs: number;
   directory: string;
   signal?: AbortSignal;
+  env?: NodeJS.ProcessEnv;
+  outputLimits?: { stdout: number; stderr: number };
 }

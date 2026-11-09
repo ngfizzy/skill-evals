@@ -49,6 +49,13 @@ try {
   const list = execute(executable, ['--root', root, '--list'], temporary);
   assert.match(list, /routing\/behavior-1/);
   assert.match(list, /caution\/proposed-review/);
+  const scoped = execute(
+    executable,
+    ['--root', root, '--load-skill', 'routing', '--list'],
+    temporary,
+  );
+  assert.match(scoped, /routing\/behavior-1/);
+  assert.doesNotMatch(scoped, /caution\/proposed-review/);
   const { writeFileSync } = await import('node:fs');
   const probe = join(prefix, 'import-contract.ts');
   writeFileSync(

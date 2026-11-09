@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 
 import { CodexAgent } from '../adaptors/index.ts';
-import { Catalog } from '../catalog/index.ts';
 import { selectRunDisplay, type RunDisplay } from '../display/index.ts';
 import { EvaluationOrchestrator, EvaluationRunner, PROTOCOL_VERSION } from '../evaluation/index.ts';
 import { Judge } from '../judge/index.ts';
@@ -12,7 +11,7 @@ import { message, singleLine } from '../utils/index.ts';
 
 import { consoleIO } from './console-io.ts';
 import { HELP } from './help.ts';
-import { prepareCases } from './helpers.ts';
+import { prepareRun, withCatalog } from './helpers.ts';
 import { parseOptions } from './options.ts';
 import type { Options, RunIO } from './types.ts';
 
@@ -26,7 +25,7 @@ export class Run {
 
       // Read-only commands: inspect a report or list matching cases.
       if (options.view) return await this.viewSavedReport(options.view, options, signal);
-      if (options.list) return await this.listCases(options);
+      if (options.list) return await this.listCases(options, signal);
 
       return await this.runEvaluations(options, signal);
     } catch (error) {
@@ -64,20 +63,20 @@ export class Run {
     }
   }
 
-  private async listCases(options: Options): Promise<number> {
-    const catalog = await Catalog.load(options.roots);
-    const selected = catalog.select(options);
+  private async listCases(
+    options: Options,
+    signal = new AbortController().signal,
+  ): Promise<number> {
+    const selected = await withCatalog(options, signal, (catalog) => catalog.select(options));
 
-    for (const entry of selected) this.io.out(`${entry.key}\t${entry.title}`);
+    for (const entry of selected)
+      this.io.out(`${singleLine(entry.key)}\t${singleLine(entry.title)}`);
     this.io.out(`${selected.length} case(s); no agent calls.`);
     return 0;
   }
 
   private async runEvaluations(options: Options, signal?: AbortSignal): Promise<number> {
     const { io } = this;
-    const catalog = await Catalog.load(options.roots);
-    const selected = catalog.select(options);
-
     const controller = new AbortController();
     const abort = (): void => controller.abort();
     signal?.addEventListener('abort', abort, { once: true });
@@ -85,12 +84,17 @@ export class Run {
 
     let display: RunDisplay | undefined;
     try {
+      const {
+        selected,
+        cases: preparedCases,
+        gitSources,
+      } = await prepareRun(options, controller.signal);
       if (!options.model) throw new Error('Live runs require --model MODEL');
       const openDisplay = selectRunDisplay(options, io, abort, controller.signal);
-      const preparedCases = await prepareCases(catalog, selected, options.context);
 
       const adapter = io.createAgent?.(options) ?? new CodexAgent(options.codex, options.timeout);
       await adapter.preflight(controller.signal);
+      controller.signal.throwIfAborted();
 
       const operatorSettings = { model: options.model, effort: options.effort };
       const judgeSettings = {
@@ -109,6 +113,7 @@ export class Run {
         judge_reasoning_effort: judgeSettings.effort,
         timeout_seconds: options.timeout,
         selected_cases: selected.length,
+        ...(gitSources.length ? { git_sources: gitSources } : {}),
         results: [],
       });
 

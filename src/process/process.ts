@@ -12,12 +12,13 @@ export async function runProcess(command: string[], options: ProcessOptions): Pr
   return new Promise((resolve, reject) => {
     const child = spawn(executable, command.slice(1), {
       cwd: options.directory,
+      env: options.env,
       detached: true,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
     const chunks: Buffer[] = [];
-    let bytes = 0;
+    const bytes = { stdout: 0, stderr: 0 };
     let diagnosticTail = Buffer.alloc(0);
     let failure: Error | undefined;
 
@@ -37,15 +38,17 @@ export async function runProcess(command: string[], options: ProcessOptions): Pr
       cleanup();
     };
 
-    const receive = (chunk: Buffer, stdout: boolean): void => {
-      bytes += chunk.length;
+    const receive = (chunk: Buffer, stream: 'stdout' | 'stderr'): void => {
+      bytes[stream] += chunk.length;
+      const used = options.outputLimits ? bytes[stream] : bytes.stdout + bytes.stderr;
+      const limit = options.outputLimits?.[stream] ?? MAX_OUTPUT;
       diagnosticTail = Buffer.concat([diagnosticTail, chunk]).subarray(-3000);
-      if (bytes > MAX_OUTPUT) stop(new Error(`Agent output exceeded ${MAX_OUTPUT} bytes`));
-      else if (stdout) chunks.push(chunk);
+      if (used > limit) stop(new Error(`Agent output exceeded ${limit} bytes`));
+      else if (stream === 'stdout') chunks.push(chunk);
     };
 
-    child.stdout.on('data', (chunk: Buffer) => receive(chunk, true));
-    child.stderr.on('data', (chunk: Buffer) => receive(chunk, false));
+    child.stdout.on('data', (chunk: Buffer) => receive(chunk, 'stdout'));
+    child.stderr.on('data', (chunk: Buffer) => receive(chunk, 'stderr'));
     child.on('error', (error) => {
       failure ??= new Error(`Agent process error: ${error.message}`);
     });
@@ -54,7 +57,10 @@ export async function runProcess(command: string[], options: ProcessOptions): Pr
     // exit, before waiting for close, as well as on timeout, abort and output overflow.
     child.on('exit', cleanup);
 
-    const timer = setTimeout(() => stop(new Error('Agent timed out')), options.timeoutMs);
+    const timer = setTimeout(
+      () => stop(new ProcessTimeoutError('Agent timed out')),
+      options.timeoutMs,
+    );
     const abort = (): void => stop(new Error('Evaluation interrupted'));
     options.signal?.addEventListener('abort', abort, { once: true });
     if (options.signal?.aborted) abort();
@@ -85,3 +91,4 @@ export async function runProcess(command: string[], options: ProcessOptions): Pr
 }
 
 export const MAX_OUTPUT = 2_097_152;
+export class ProcessTimeoutError extends Error {}

@@ -25,6 +25,7 @@
     "src/prompts/*.ts",
     "src/report/*.ts",
     "src/runner/*.ts",
+    "src/sources/*.ts",
     "src/utils/files.ts",
     "src/utils/index.ts",
     "src/utils/message.ts",

@@ -1,29 +1,39 @@
-import { readdir, realpath } from 'node:fs/promises';
-import { join, relative } from 'node:path';
-
 import type { EvaluationCase } from '../evaluation/index.ts';
 import type { Options } from '../runner/index.ts';
-import {
-  array,
-  containedPath,
-  exists,
-  mapping,
-  nonempty,
-  readBounded,
-  sha256,
-  strings,
-} from '../utils/index.ts';
+import type { SkillRoot } from '../sources/index.ts';
+import { array, mapping, nonempty, sha256, strings, message } from '../utils/index.ts';
 
-import { criteria, jsonCriteria, parseYaml, referenceFiles, validateReference } from './helpers.ts';
-import type { CaseDraft, EvalSource, Skill } from './types.ts';
+import {
+  criteria,
+  jsonCriteria,
+  parseYaml,
+  referenceFiles,
+  validateReference,
+  validateSkillName,
+} from './helpers.ts';
+import { CatalogRoot, SOURCE_LIMIT } from './root.ts';
+import type { CaseDraft, CatalogLoadOptions, EvalSource, Skill } from './types.ts';
 
 export class Catalog {
-  readonly skills = new Map<string, Skill>();
+  private readonly skills = new Map<string, Skill>();
+  private readonly dependencies = new Map<string, Skill>();
+  private readonly roots: CatalogRoot[] = [];
   readonly cases: EvaluationCase[] = [];
 
-  static async load(roots: string[]): Promise<Catalog> {
-    const catalog = new Catalog();
-    for (const root of roots) await catalog.loadRoot(await realpath(root));
+  private constructor(private readonly scoped: boolean) {}
+
+  static async load(
+    roots: readonly SkillRoot[],
+    options: CatalogLoadOptions = {},
+  ): Promise<Catalog> {
+    const names = [...new Set(options.loadSkills)].sort();
+    names.forEach(validateSkillName);
+
+    const catalog = new Catalog(names.length > 0);
+    for (const root of roots) await catalog.loadRoot(root, names);
+
+    const unknown = names.filter((name) => !catalog.skills.has(name));
+    if (unknown.length) throw new Error(`Unknown requested skills: ${unknown.join(', ')}`);
 
     if (!catalog.cases.length) throw new Error('No behavioral cases found');
     return catalog;
@@ -56,7 +66,8 @@ export class Catalog {
     selectedReferences?: readonly string[],
   ): Promise<string> {
     if (visited.has(name)) return '';
-    const skill = this.skills.get(name);
+    const skill =
+      this.skills.get(name) ?? this.dependencies.get(name) ?? (await this.loadDependency(name));
     if (!skill) throw new Error(`Missing dependency ${name}; add its repository with --root`);
 
     visited.add(name);
@@ -64,22 +75,19 @@ export class Catalog {
     for (const dependency of skill.requires)
       parts.push(await this.collectBundle(dependency, visited));
 
-    const files = [join(skill.path, 'SKILL.md')];
-    const references = join(skill.path, 'references');
+    const files = ['SKILL.md'];
     if (selectedReferences !== undefined) {
       for (const reference of selectedReferences) {
-        await validateReference(reference, skill.path);
-        const path = join(skill.path, reference);
-        files.push(path);
+        await validateReference(skill.root, reference);
+        files.push(reference);
       }
-    } else if (await exists(references))
-      files.push(...(await referenceFiles(references, skill.path)));
+    } else if ((await skill.root.kind('references')) !== 'missing') {
+      files.push(...(await referenceFiles(skill.root, 'references')));
+    }
 
     for (const path of files) {
-      const content = await readBounded(await containedPath(path, skill.path), BUNDLE_LIMIT);
-      parts.push(
-        `\n--- ${name}/${relative(skill.path, path).split('\\').join('/')} ---\n${content}`,
-      );
+      const content = await skill.root.readText(path, BUNDLE_LIMIT);
+      parts.push(`\n--- ${name}/${path.split('\\').join('/')} ---\n${content}`);
       if (Buffer.byteLength(parts.join('\n')) > BUNDLE_LIMIT)
         throw new Error(`Skill bundle exceeds 512 KiB: ${name}`);
     }
@@ -87,42 +95,70 @@ export class Catalog {
     return parts.join('\n');
   }
 
-  private async loadRoot(root: string): Promise<void> {
-    const directory = await containedPath(join(root, 'skills'), root);
-    const manifest = join(root, 'external-skills.yaml');
-    const external = (await exists(manifest))
-      ? mapping(
-          mapping(parseYaml(await readBounded(await containedPath(manifest, root), SOURCE_LIMIT)))
-            .references ?? {},
-        )
-      : {};
+  private async loadRoot(root: SkillRoot, names: readonly string[]): Promise<void> {
+    const source = await CatalogRoot.open(root);
+    this.roots.push(source);
 
-    for (const name of (await readdir(directory)).sort()) {
-      const entry = join(directory, name, 'SKILL.md');
-      if (!(await exists(entry))) continue;
-      if (this.skills.has(name)) throw new Error(`Duplicate skill ${name} across roots`);
+    for (const name of this.scoped ? names : await source.names()) {
+      const skill = await source.find(name);
+      if (!skill) continue;
 
-      const path = await containedPath(join(directory, name), directory);
-      await containedPath(entry, path);
-      if (this.skills.size >= 10_000) throw new Error('Catalog exceeds 10000 skills');
-
-      this.skills.set(name, { path, requires: strings(external[name] ?? []) });
-      await this.loadEvals(name, path);
+      this.addSkill(name, skill);
+      await this.loadEvals(name, skill);
     }
   }
 
-  private async loadEvals(name: string, path: string): Promise<void> {
-    const yaml = join(path, 'eval.yaml');
-    const json = join(path, 'evals', 'evals.json');
-    const hasYaml = await exists(yaml);
-    const hasJson = await exists(json);
+  private async loadDependency(name: string): Promise<Skill | undefined> {
+    if (!this.scoped) return undefined;
+    validateSkillName(name);
+
+    let dependency: Skill | undefined;
+    for (const source of this.roots) {
+      const found = await source.find(name);
+      if (!found) continue;
+      if (dependency) throw new Error(`Duplicate skill ${name} across roots`);
+      dependency = found;
+    }
+    if (!dependency) return undefined;
+
+    try {
+      if ((await dependency.root.kind(YAML_EVAL)) !== 'missing') {
+        const document = mapping(
+          parseYaml(await dependency.root.readText(YAML_EVAL, SOURCE_LIMIT)),
+        );
+        dependency.requires.push(...strings(document.requires ?? []));
+      }
+    } catch (error) {
+      throw new Error(`Invalid dependency metadata for ${name}: ${message(error)}`);
+    }
+
+    this.checkSkillLimit();
+    this.dependencies.set(name, dependency);
+    return dependency;
+  }
+
+  private addSkill(name: string, skill: Skill): void {
+    if (this.skills.has(name)) throw new Error(`Duplicate skill ${name} across roots`);
+    this.checkSkillLimit();
+    this.skills.set(name, skill);
+  }
+
+  private checkSkillLimit(): void {
+    if (this.skills.size + this.dependencies.size >= 10_000)
+      throw new Error('Catalog exceeds 10000 skills');
+  }
+
+  private async loadEvals(name: string, skill: Skill): Promise<void> {
+    const { root } = skill;
+    const hasYaml = (await root.kind(YAML_EVAL)) !== 'missing';
+    const hasJson = (await root.kind(JSON_EVAL)) !== 'missing';
     if (hasYaml && hasJson) throw new Error(`Ambiguous eval formats for ${name}`);
     if (!hasYaml && !hasJson) return;
 
-    const sourcePath = hasYaml ? yaml : json;
-    const content = await readBounded(await containedPath(sourcePath, path), SOURCE_LIMIT);
+    const sourcePath = hasYaml ? YAML_EVAL : JSON_EVAL;
+    const content = await root.readText(sourcePath, SOURCE_LIMIT);
     const document = mapping(hasYaml ? parseYaml(content) : JSON.parse(content));
-    const source = { path: sourcePath, hash: sha256(content) };
+    const source = { path: root.source(sourcePath), hash: sha256(content) };
 
     if (hasYaml) await this.addYamlCases(name, document, source);
     else await this.addJsonCases(name, document, source);
@@ -182,7 +218,7 @@ export class Catalog {
     const selected = references === undefined ? undefined : strings(references);
     if (selected)
       for (const reference of selected)
-        await validateReference(reference, this.skills.get(skill)!.path);
+        await validateReference(this.skills.get(skill)!.root, reference);
     if (!assertions.length) throw new Error(`Case ${key} has no assertions`);
     if (this.cases.length >= 10_000) throw new Error('Catalog exceeds 10000 cases');
 
@@ -201,4 +237,5 @@ export class Catalog {
 }
 
 const BUNDLE_LIMIT = 524_288;
-const SOURCE_LIMIT = 2_097_152;
+const YAML_EVAL = 'eval.yaml';
+const JSON_EVAL = 'evals/evals.json';

@@ -32,20 +32,21 @@ retains the original text. Keep console recordings private too.
 
 ## Fields
 
-| Field                                        | Meaning                                                       |
-| -------------------------------------------- | ------------------------------------------------------------- |
-| `version`                                    | Report structure version, currently `1`                       |
-| `mode`                                       | `response-only`                                               |
-| `evaluation_protocol`                        | `response-decisions-v4`                                       |
-| `started_at`, `finished_at`                  | UTC timestamps; finish absent on interruption                 |
-| `agent_version`                              | Actual preflight Codex version                                |
-| `model`, `judge_model`                       | Explicit candidate and judge identities                       |
-| `reasoning_effort`, `judge_reasoning_effort` | Explicit per-session effort                                   |
-| `context`                                    | Requested full or focused reference selection                 |
-| `timeout_seconds`                            | Bound for each candidate or judge call                        |
-| `selected_cases`                             | Filtered, limited live batch size                             |
-| `results`                                    | Completed results in execution order                          |
-| `summary`                                    | Passed, failed, errors, pending and aggregate assertion score |
+| Field                                        | Meaning                                                           |
+| -------------------------------------------- | ----------------------------------------------------------------- |
+| `version`                                    | Report structure version, currently `1`                           |
+| `mode`                                       | `response-only`                                                   |
+| `evaluation_protocol`                        | `response-decisions-v4`                                           |
+| `started_at`, `finished_at`                  | UTC timestamps; finish absent on interruption                     |
+| `agent_version`                              | Actual preflight Codex version                                    |
+| `model`, `judge_model`                       | Explicit candidate and judge identities                           |
+| `reasoning_effort`, `judge_reasoning_effort` | Explicit per-session effort                                       |
+| `context`                                    | Requested full or focused reference selection                     |
+| `timeout_seconds`                            | Bound for each candidate or judge call                            |
+| `selected_cases`                             | Filtered, limited live batch size                                 |
+| `git_sources`                                | Optional HTTPS repository URLs and resolved commits in root order |
+| `results`                                    | Completed results in execution order                              |
+| `summary`                                    | Passed, failed, errors, pending and aggregate assertion score     |
 
 Each result includes the case key, skill, ID, title, scenario as `prompt`, criteria, source path and
 `source_sha256` of the raw eval source. `skill_sha256` hashes the exact bundled instruction string.
@@ -59,6 +60,12 @@ prompt nor protocol changes. Earlier reports without this field identify that li
 the exact prompt instead. The viewer supports protocol v3/v4 version 1 reports; it validates saved
 data before displaying it and never rewrites it. Pending counts remain visible, even when a partial
 report has no completed case details.
+
+For a Git case, `source` has the form
+`git+https://HOST/OWNER/REPO.git#COMMIT:skills/NAME/eval.yaml`. The report records all supplied Git
+snapshots in `git_sources`, even when a root only supplies dependencies. Reuse a recorded commit as
+the revision in `--root` to pin a subsequent run. Saved reports, including reports written before
+Git roots were supported, replay without Git or network access.
 
 Earlier reports may omit `candidate_input`; their `prompt` remains the scenario only. New results
 retain the attempted input even when the candidate call fails.

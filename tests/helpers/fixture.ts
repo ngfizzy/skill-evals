@@ -4,8 +4,17 @@ import { tmpdir } from 'node:os';
 import type { TestContext } from 'node:test';
 
 import type { Agent, AgentRequest } from '../../src/adaptors/index.ts';
+import { Catalog, type CatalogLoadOptions } from '../../src/catalog/index.ts';
 import type { Criterion } from '../../src/evaluation/index.ts';
 import type { Report } from '../../src/report/index.ts';
+import { LocalSkillRoot } from '../../src/sources/index.ts';
+
+export async function loadLocalCatalog(
+  roots: readonly string[],
+  options?: CatalogLoadOptions,
+): Promise<Catalog> {
+  return Catalog.load(await Promise.all(roots.map((root) => LocalSkillRoot.open(root))), options);
+}
 
 export async function temporary(t: TestContext): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), 'skill-evals-test-'));

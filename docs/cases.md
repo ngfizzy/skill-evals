@@ -1,8 +1,15 @@
 # Case formats
 
-Roots contain `skills/NAME/SKILL.md`. Skill directory names are the discovery identity. Skills
-without cases can supply dependencies. Duplicate skill names across roots are errors. Both formats
-in one skill are ambiguous and rejected.
+Local directories and Git HTTPS roots both contain `skills/NAME/SKILL.md`. Skill directory names are
+the discovery identity. Skills without cases can supply dependencies. Duplicate skill names across
+roots are errors. Both formats in one skill are ambiguous and rejected.
+
+With `--load-skill NAME`, the catalog looks up the named directories directly and parses their
+cases. Other eval files are skipped. A live run reads the manifests and YAML dependency declarations
+needed by its selected cases. Dependency-only skills supply instructions even without eval files.
+Their case rows are skipped. Listing reads selected case metadata without resolving the dependency
+graph or assembling instructions. Without `--load-skill`, the catalog discovers all skills before
+applying `--skill` and `--case`.
 
 ## YAML
 
@@ -65,10 +72,12 @@ deduplicating repeated/cyclic references. A missing dependency errors before mod
 Markdown files under a skill's `references/` tree are included in sorted order; eval metadata is
 excluded. Entrypoints and reference files receive stable `--- NAME/path ---` section labels.
 
-Paths resolve through real paths and must stay inside their owning root, skills directory or skill
-as appropriate. Symlinks to outside locations and cyclic reference directories are rejected. Files
-must be regular UTF-8 files. Case and manifest sources are bounded to 2 MiB each; complete
-instruction bundles to 512 KiB. Catalogs and reference traversals have a 10,000-entry bound.
+Local paths resolve through real paths and must stay inside their owning root, skills directory or
+skill. Symlinks to outside locations and cyclic reference directories are rejected. Git roots read
+regular blobs and trees at the resolved commit. A selected path through a Git symlink or submodule
+is a setup error. Files must be regular UTF-8 files. Case and manifest sources are bounded to 2 MiB
+each. Complete instruction bundles are bounded to 512 KiB. Catalogs and reference traversals have a
+10,000-entry bound.
 
 ## Explicit rubrics and focused context
 

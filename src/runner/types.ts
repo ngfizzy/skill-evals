@@ -3,6 +3,7 @@ import type { TerminalIO } from '../display/index.ts';
 
 export interface Options {
   roots: string[];
+  loadSkills: string[];
   skills: string[];
   cases: string[];
   limit: number;

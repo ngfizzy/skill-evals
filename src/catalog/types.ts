@@ -1,8 +1,13 @@
 import type { Criterion } from '../evaluation/index.ts';
+import type { SkillRoot } from '../sources/index.ts';
 
 export interface Skill {
-  path: string;
+  root: SkillRoot;
   requires: string[];
+}
+
+export interface CatalogLoadOptions {
+  readonly loadSkills?: readonly string[];
 }
 
 export interface EvalSource {

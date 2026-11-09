@@ -1,8 +1,9 @@
 export const HELP = `Usage: skill-evals [options]
 
 Response-only skill evaluations. Live runs require an explicit model.
-  --root DIR          Skill repository containing skills/; repeat for dependencies
+  --root SOURCE       Directory or git+https://HOST/OWNER/REPO.git[#REV]; repeatable
                       (default: current directory; explicit roots replace default)
+  --load-skill NAME   Load cases only for this skill; repeatable
   --skill NAME        Skill filter; repeatable
   --case KEY          Full skill/case key; repeatable; intersects skill filters
   --list              List ALL filtered cases, ignoring limit; no agent calls
@@ -23,6 +24,8 @@ Response-only skill evaluations. Live runs require an explicit model.
   --full-input        Include the exact operator prompt in plain output
   -h, --help          Show help
 
+Git roots use default HEAD or a full branch/tag ref or commit ID. Rerun with the
+commit saved in the report, e.g. git+https://HOST/OWNER/REPO.git#COMMIT.
 Exit: 0 all passed/list/help; 1 behavioral failures; 2 execution/config/grading errors.
 Each case uses two fresh model sessions. No tools or live integrations are evaluated.
 Interactive: [/] cases, Tab sections, Enter toggle, s skill, p prompt, arrows scroll,

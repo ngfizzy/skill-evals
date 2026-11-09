@@ -62,6 +62,24 @@ skill-evals --root ./my-skills --root ./shared-skills \
   --skill routing --case routing/behavior-1 --list
 ```
 
+Git HTTPS roots use the same layout and can be mixed with local directories. Use `--load-skill` to
+read cases only for named skills. You can repeat it and still use `--skill` and `--case` as filters.
+
+```sh
+skill-evals --root 'git+https://github.com/OWNER/REPO.git' --load-skill routing --list
+skill-evals --root 'git+https://github.com/OWNER/REPO.git#refs/tags/v1' \
+  --root ./shared-skills --load-skill routing --case routing/behavior-1 --model YOUR_MODEL
+```
+
+Remote roots require Git on `PATH`. Without a revision, the CLI fetches the remote default HEAD. Use
+a full branch ref, tag ref, or fetchable 40-character commit ID after `#`. To rerun with the same
+snapshot, replace the revision with the commit recorded under `git_sources` in the report. Each root
+is fetched shallowly into a temporary bare repository and read without checkout. Selecting a skill
+limits catalog reads. The Git server can still transfer other objects from the commit. Private HTTPS
+repositories can use a configured non-interactive Git credential helper. Credential URLs, URL
+rewrites that change the endpoint, and HTTP redirects are rejected. The fetch has a separate
+60-second timeout per root.
+
 `--list` lists **all** filtered cases without agent calls, even with `--limit 1`. Live runs default
 to at most five cases and 120 seconds per agent call. A default report goes under `.eval-runs/` in
 the caller's current directory. `--output` selects a new file and refuses existing files or
@@ -196,14 +214,14 @@ bun run pack:check
 bun run install:check
 ```
 
-Tests use synthetic inputs and a fake executable, exercising real CLI processes, path containment,
-malformed grading, descendant cleanup and partial reports. Optional extraction audits use
-`bun run audit:codex` (the installed Codex binary against a temporary localhost mock; no model call)
-and `bun run parity:ruby` with `RUBY_RUNNER` pointing to a read-only original runner. The parity
-audit uses only the included synthetic examples and compares CLI, grading and report outcomes. The
-preserved Ruby runner uses protocol v3; this CLI uses v4 and additionally supplies the skill bundle
-to the judge. This audit does not establish identical model inputs or behavioral parity across those
-protocols.
+Tests use synthetic inputs and a fake agent executable. The loopback HTTPS fixtures need Git and
+OpenSSL on `PATH`. Tests exercise real CLI processes, path containment, malformed grading,
+descendant cleanup and partial reports. Optional extraction audits use `bun run audit:codex` (the
+installed Codex binary against a temporary localhost mock; no model call) and `bun run parity:ruby`
+with `RUBY_RUNNER` pointing to a read-only original runner. The parity audit uses only the included
+synthetic examples and compares CLI, grading and report outcomes. The preserved Ruby runner uses
+protocol v3; this CLI uses v4 and additionally supplies the skill bundle to the judge. This audit
+does not establish identical model inputs or behavioral parity across those protocols.
 
 OpenTUI is imported only when opening an interactive view. Help, listing and plain runs do not
 initialize the native renderer. The package includes the TSX source and TypeScript JSX

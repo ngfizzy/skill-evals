@@ -11,6 +11,7 @@ export function parseOptions(args: string[]): Options {
     allowPositionals: false,
     options: {
       root: { type: 'string', multiple: true },
+      'load-skill': { type: 'string', multiple: true },
       skill: { type: 'string', multiple: true },
       case: { type: 'string', multiple: true },
       limit: { type: 'string' },
@@ -39,6 +40,7 @@ export function parseOptions(args: string[]): Options {
 
   const evaluationOptions = [
     'root',
+    'load-skill',
     'skill',
     'case',
     'model',
@@ -58,6 +60,7 @@ export function parseOptions(args: string[]): Options {
 
   return {
     roots: values.root?.length ? values.root : [process.cwd()],
+    loadSkills: values['load-skill'] ?? [],
     skills: values.skill ?? [],
     cases: values.case ?? [],
     limit: parsePositiveInteger(values.limit ?? '5', 'limit', MAX_NUMERIC_OPTION),
