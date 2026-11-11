@@ -1,5 +1,8 @@
 # skill-evals
 
+[![CI][ci-badge]][ci-workflow] [![MIT license][license-badge]][license]
+[![Bun 1.4.4 or newer][bun-badge]][bun]
+
 Test how an agent responds when given a skill and a simulated scenario. Each case runs a fresh Codex
 candidate session, then a separate judge session checks every criterion. Reports preserve responses,
 quoted evidence, hashes and errors.
@@ -245,3 +248,10 @@ compatibility.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+[ci-badge]: https://github.com/ngfizzy/skill-evals/actions/workflows/ci.yml/badge.svg?branch=main
+[ci-workflow]: https://github.com/ngfizzy/skill-evals/actions/workflows/ci.yml
+[license-badge]: https://img.shields.io/github/license/ngfizzy/skill-evals
+[license]: LICENSE
+[bun-badge]: https://img.shields.io/badge/Bun-%3E%3D1.4.4-black?logo=bun
+[bun]: https://bun.sh
