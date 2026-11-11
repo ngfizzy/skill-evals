@@ -15,10 +15,8 @@ reports belong in this repository or npm tarball. Included examples and automate
 synthetic. Source locations and release planning remain in private operational records outside this
 package. The README screenshot shows a user-authorized run of the public better-docs skill.
 
-The original runner did not carry a repository-wide license at extraction time. Extraction
-authorization does not establish a public license grant. This release candidate retains
-**UNLICENSED** licensing metadata and `private: true` prevents accidental npm publishing. The
-package name is provisional.
+The owner has licensed this standalone package under the [MIT License](LICENSE). The package keeps
+`private: true` to prevent accidental npm publishing. The package name is provisional.
 
 Runtime dependencies are `@openai/codex`, `@opentui/core`, `@opentui/react`, `react`, `yaml`, and
 `zod`. Versions are recorded in the package manifest and lockfile. Installation includes the

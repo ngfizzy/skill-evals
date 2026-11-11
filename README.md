@@ -241,3 +241,7 @@ independently (each defaults to `low`). Reports record both settings. Use `--con
 per-case reference declarations for bounded context, or `--context full` for a controlled comparison
 using all references. See [case formats](docs/cases.md) and [grading](docs/reports.md) for
 compatibility.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

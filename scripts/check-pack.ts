@@ -26,6 +26,7 @@ const expected = [
   'bunfig.toml',
   'tsconfig.json',
   'README.md',
+  'LICENSE',
   'PROVENANCE.md',
   'src/cli.ts',
   'src/adaptors/codex-helpers.ts',

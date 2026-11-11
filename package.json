@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Response-only behavioral evaluations for agent skills, with isolated Codex candidate and judge sessions.",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "skill-evals": "src/cli.ts"
