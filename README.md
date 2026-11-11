@@ -9,6 +9,8 @@ automatic skill selection or Gmail, Sheets and browser behavior. Model judges ca
 runs; retain earlier reports when repeating a case. A malformed judgment is an execution/grading
 error, never a candidate fail.
 
+![Terminal inspector showing better-docs results](assets/better-docs-evaluation.png)
+
 ## Quickstart
 
 Requires Bun 1.4.4+ on macOS or Linux. Installation includes OpenAI's official `@openai/codex` at
@@ -16,8 +18,8 @@ Requires Bun 1.4.4+ on macOS or Linux. Installation includes OpenAI's official `
 the existing Codex authentication. Use `--codex PATH` to select a different copy of the same
 version. Offline listing and tests do not require authentication or model calls.
 
-This is a private release candidate. The npm name is provisional and no registry installation is
-available yet. Install dependencies and a local tarball:
+This is a release candidate. The npm name is provisional and no registry installation is available
+yet. Install dependencies and a local tarball:
 
 ```sh
 bun install --frozen-lockfile

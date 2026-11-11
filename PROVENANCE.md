@@ -13,14 +13,13 @@ migration decision.
 No private skill instructions, real workflow cases, career data, credentials or private evaluation
 reports belong in this repository or npm tarball. Included examples and automated test fixtures are
 synthetic. Source locations and release planning remain in private operational records outside this
-package.
+package. The README screenshot shows a user-authorized run of the public better-docs skill.
 
 The original runner did not carry a repository-wide license at extraction time. Extraction
-authorization does not establish a public license grant. This release candidate is **UNLICENSED**
-and `private: true` prevents accidental npm publishing. Before public release, the owner must
-resolve source rights, choose a license, review dependency notices and approve publication. The
-package name is provisional; a registry 404 is not a reservation or proof of publishing rights.
+authorization does not establish a public license grant. This release candidate retains
+**UNLICENSED** licensing metadata and `private: true` prevents accidental npm publishing. The
+package name is provisional.
 
-The runtime dependency is `yaml` (ISC); development dependencies and licenses are recorded in the
-lockfile and must be reviewed for the final release. No third-party Codex binary is bundled; users
-install and authenticate Codex separately.
+Runtime dependencies are `@openai/codex`, `@opentui/core`, `@opentui/react`, `react`, `yaml`, and
+`zod`. Versions are recorded in the package manifest and lockfile. Installation includes the
+official Codex CLI dependency. Users authenticate Codex with their own accounts.
