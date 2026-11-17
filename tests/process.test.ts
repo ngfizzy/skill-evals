@@ -1,16 +1,17 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
+import test from 'node:test';
 
-import type { ProcessOptions } from '../src/process/index.ts';
-import { runProcess } from '../src/process/index.ts';
+import { ProcessManager, type ProcessOptions } from '../src/process/index.ts';
 
 import { temporary } from './helpers/fixture.ts';
 
+const processManager = new ProcessManager();
+
 async function nodeRun(root: string, program: string, options: Partial<ProcessOptions> = {}) {
-  return runProcess([process.execPath, '-e', program], {
+  return processManager.run([process.execPath, '-e', program], {
     input: '',
     directory: root,
     timeoutMs: 3000,
@@ -29,7 +30,7 @@ test('process stdin/stdout, spawn error, nonzero exit and bounded stderr diagnos
     /exited 7: deliberate diagnostic/,
   );
   await assert.rejects(
-    runProcess(['/missing/agent'], { input: '', directory: root, timeoutMs: 100 }),
+    processManager.run(['/missing/agent'], { input: '', directory: root, timeoutMs: 100 }),
     /process error/,
   );
 });
@@ -43,6 +44,40 @@ test('bounds include timeout, combined streams and output emitted immediately be
     'process.stdout.write("x".repeat(1500000));process.stderr.write("x".repeat(1500000))',
   ])
     await assert.rejects(nodeRun(root, program), /output exceeded/);
+});
+
+test('stdout callbacks stream output and callback failure terminates the process', async (t) => {
+  const root = await temporary(t);
+  const chunks: Buffer[] = [];
+  const result = await nodeRun(root, 'process.stdout.write("streamed")', {
+    onStdout: (chunk) => chunks.push(chunk),
+  });
+  assert.equal(Buffer.concat(chunks).toString(), result);
+
+  await assert.rejects(
+    nodeRun(root, 'console.log("ready");setInterval(()=>{},1000)', {
+      onStdout() {
+        throw new Error('consumer failure');
+      },
+    }),
+    /Process output consumer failed/,
+  );
+});
+
+test('one manager keeps concurrent output and cancellation independent', async (t) => {
+  const root = await temporary(t);
+  const controller = new AbortController();
+  const interrupted = assert.rejects(
+    nodeRun(root, 'console.log("cancel-me");setInterval(()=>{},1000)', {
+      signal: controller.signal,
+      onStdout: () => controller.abort(),
+    }),
+    /interrupted/,
+  );
+  const successful = nodeRun(root, 'setTimeout(()=>process.stdout.write("survived"),100)');
+
+  const [, output] = await Promise.all([interrupted, successful]);
+  assert.equal(output, 'survived');
 });
 
 for (const mode of ['timeout', 'leader-exit', 'abort'])

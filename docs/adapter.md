@@ -4,8 +4,8 @@ The adapter runs the official `@openai/codex` dependency at `0.165.0` on macOS a
 It resolves the package from the runner's installation and starts its launcher with Bun.
 `--codex PATH` selects a different executable. Preflight checks the exact version, required flags
 and named feature availability. New versions fail closed until their tool/configuration changes are
-audited. Authentication is supplied by the installed Codex CLI; this package stores no credentials
-and does not copy authentication files.
+audited. The current evaluation adapter uses the existing Codex login. The internal authentication
+service described below has a separate store and is not connected to evaluation commands yet.
 
 The CLI executes TypeScript directly with Bun 1.4.4+. Its subprocess adapter continues to use the
 Node-compatible child_process APIs, including POSIX process groups. Timeout, abort and leader-exit
@@ -45,6 +45,63 @@ Run `bun run audit:codex` to inspect the actual Responses request using a tempor
 provider with provider authentication disabled. The audit checks that the adapter exposes zero tools
 and forwards independent candidate/judge effort settings. It records no headers or prompt bodies and
 makes no model calls.
+
+## Dedicated authentication service
+
+The internal `src/auth/` service provides login, local status and logout for a dedicated ChatGPT
+login. CLI and TUI authentication controls are not exposed yet. Its modules are packaged for
+internal use; package exports remain closed.
+
+The store is `$XDG_DATA_HOME/skill-evals/codex-auth`, or `$HOME/.local/share/skill-evals/codex-auth`
+when `XDG_DATA_HOME` is unset. The service rejects a store that resolves to the normal `CODEX_HOME`,
+invalid ownership or permissions, symlinked store directories, linked credential files, and API-key
+authentication. Directories require mode `0700`; credentials and the persistent `.auth.lock` file
+require `0600`. Status validates local ChatGPT credentials; it does not contact OpenAI or establish
+quota or subscription access.
+
+Every operation acquires the same exclusive `flock(2)` lock before reading credentials or creating
+an auth link. A waiter can cancel and has a 120-second default deadline. Login has a 15-minute
+deadline; native version checks and logout each have 20 seconds. The trusted Bun launcher starts the
+pinned native Codex binary directly and passes the lock as descriptor 3. Closing the launcher's
+descriptor preserves a surviving native process's lock. The service never deletes the lock file or
+explicitly unlocks a descriptor shared with a child.
+
+Auth operations get a fresh home, working directory, XDG paths and temporary directory, with an
+explicit environment allowlist. Their only credential access is a temporary `auth.json` symlink to
+the managed file. The auth service delegates temporary-directory cleanup to its guardian, including
+cancellation. Native logout removes that link; the service also removes its unchanged managed
+target. It preserves a credential file changed unexpectedly during logout. Errors use fixed reason
+codes; raw native diagnostics are not forwarded. Only validated official sign-in URLs are streamed
+to the caller.
+
+Before exposing an auth link, the launcher creates an owner-only `.auth-context.json` cleanup record
+in the managed store. It contains workspace identity and the cleanup guardian's PID, never
+credentials. Before starting native authentication, the launcher transfers the same lock descriptor
+to a guardian and an authenticated worker. The worker and native Codex run in a process group whose
+ID is the guardian's live PID. The guardian first moves to a separate control group, established by
+a bounded startup helper. Its live PID reserves the worker group's numeric ID, so it cannot signal a
+group that reused an exited launcher's PID. On completion, timeout or parent loss, the guardian
+terminates and confirms exit of its worker group, removes the matching workspace and cleanup record,
+then exits to release its descriptor. It monitors parent loss through `getppid(2)`. The parent waits
+for cleanup before reporting operation success.
+
+Context cleanup removes and verifies the auth link before deleting other temporary files. If cleanup
+fails, the guardian keeps the actual OS lock and retries cleanup; it never expires or steals
+ownership. The caller gets `cleanup-required` after a bounded cleanup wait. Restoring access to the
+original workspace lets cleanup finish. If the guardian itself is killed, its record still blocks
+store reuse. Explicit recovery requires confirming that writers have stopped and removing the
+recorded temporary workspace before removing that operation's record. Never remove a record or stop
+a guardian merely to bypass a surviving writer. The record supplements `flock` rather than replacing
+it.
+
+This lock binding requires exactly Bun `1.4.4`. Audited targets are macOS ARM64 and Linux ARM64/x64
+with glibc or musl, on allowlisted local filesystems. Bun FFI is experimental; runtime upgrades
+require a new audit. An advisory lock protects participating callers, not hostile filesystem writers
+or a Codex process launched separately against the managed store.
+
+Run `bun run audit:auth-lock` to verify that the packaged native Codex retains the production lock
+after its launcher dies and releases it on exit. It uses a temporary localhost mock without account
+credentials or model calls. The audit accepts an optional native executable path for platform tests.
 
 ## Provider extension boundary
 

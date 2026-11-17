@@ -33,6 +33,27 @@ const expected = [
   'src/adaptors/codex.ts',
   'src/adaptors/index.ts',
   'src/adaptors/types.ts',
+  ...[
+    'cleanup',
+    'context',
+    'errors',
+    'events',
+    'guardian',
+    'index',
+    'launcher',
+    'libc',
+    'lines',
+    'lock',
+    'native',
+    'operations',
+    'platform',
+    'protocol',
+    'runtime',
+    'service',
+    'store',
+    'types',
+    'worker',
+  ].map((name) => `src/auth/${name}.ts`),
   'src/catalog/catalog.ts',
   'src/catalog/helpers.ts',
   'src/catalog/index.ts',
@@ -114,6 +135,7 @@ const expected = [
   ...['git-command', 'git-tree', 'git', 'index', 'input', 'local', 'resolve', 'types'].map(
     (name) => `src/sources/${name}.ts`,
   ),
+  'src/utils/binary.ts',
   'src/utils/files.ts',
   'src/utils/index.ts',
   'src/utils/message.ts',
@@ -138,6 +160,7 @@ for (const path of files) {
   const content = readFileSync(path, 'utf8');
   assert.doesNotMatch(content, PRIVATE_MATERIAL_PATTERN, `Private material in ${path}`);
 }
+
 console.log(
   `Pack content check passed: ${files.length} reviewed files; no reports, tests, source workspaces or credentials.`,
 );

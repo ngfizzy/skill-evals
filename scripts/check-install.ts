@@ -27,6 +27,7 @@ try {
       process.cwd(),
     ),
   );
+
   const prefix = join(temporary, 'installed');
   execute(
     'npm',
@@ -43,8 +44,10 @@ try {
     ],
     temporary,
   );
+
   const executable = join(prefix, 'node_modules', '.bin', 'skill-evals');
   assert.match(execute(executable, ['--help'], temporary), /Usage: skill-evals/);
+
   const root = join(prefix, 'node_modules', 'skill-evals', 'examples', 'basic');
   const list = execute(executable, ['--root', root, '--list'], temporary);
   assert.match(list, /routing\/behavior-1/);
@@ -56,6 +59,7 @@ try {
   );
   assert.match(scoped, /routing\/behavior-1/);
   assert.doesNotMatch(scoped, /caution\/proposed-review/);
+
   const { writeFileSync } = await import('node:fs');
   const probe = join(prefix, 'import-contract.ts');
   writeFileSync(
@@ -69,6 +73,7 @@ for (const name of ['skill-evals', 'skill-evals/src/catalog/index.ts', 'skill-ev
   );
   execute(process.execPath, [probe], temporary);
   console.log('Installed package import boundary passed: root and deep imports rejected.');
+
   writeFileSync(
     probe,
     `import assert from 'node:assert/strict';
@@ -81,6 +86,36 @@ assert.equal(agent.version, 'codex-cli 0.165.0');
   );
   execute(process.execPath, ['--no-env-file', '--no-install', probe], temporary);
   console.log('Installed Codex preflight passed outside checkout with no Codex or Node on PATH.');
+
+  writeFileSync(
+    probe,
+    `import assert from 'node:assert/strict';
+import {mkdtemp,rm,writeFile} from 'node:fs/promises';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
+const {AuthService}=await import(${JSON.stringify(join(prefix, 'node_modules', 'skill-evals', 'src', 'auth', 'index.ts'))});
+const {packagedAuthRuntime}=await import(${JSON.stringify(join(prefix, 'node_modules', 'skill-evals', 'src', 'auth', 'runtime.ts'))});
+const {ProcessManager}=await import(${JSON.stringify(join(prefix, 'node_modules', 'skill-evals', 'src', 'process', 'index.ts'))});
+const processManager=new ProcessManager();
+const root=await mkdtemp(join(tmpdir(),'installed-auth-'));
+try {
+const env={HOME:root,XDG_DATA_HOME:root};
+const service=new AuthService({env});
+assert.equal(await service.execute('status'),'signed-out');
+assert.equal((await processManager.run([packagedAuthRuntime(),'--version'],{input:'',directory:root,timeoutMs:20000})).trim(),'codex-cli 0.165.0');
+const store=join(root,'skill-evals','codex-auth');
+await writeFile(join(store,'auth.json'),JSON.stringify({auth_mode:'chatgpt',OPENAI_API_KEY:null,tokens:{id_token:'synthetic-id',access_token:'synthetic-access',refresh_token:'synthetic-refresh'}}),{mode:0o600});
+assert.equal(await service.execute('status'),'signed-in');
+assert.equal(await service.execute('logout'),'signed-out');
+assert.equal(await Bun.file(join(store,'auth.json')).exists(),false);
+} finally {await rm(root,{recursive:true,force:true});}
+`,
+  );
+  execute(process.execPath, ['--no-env-file', '--no-install', probe], temporary);
+  console.log(
+    'Installed auth service passed: separate synthetic store, native runtime and logout. No account credentials used.',
+  );
+
   writeFileSync(
     probe,
     `import assert from 'node:assert/strict';

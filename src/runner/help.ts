@@ -1,3 +1,5 @@
+import { AUDITED_CODEX_VERSION } from '../adaptors/codex-helpers.ts';
+
 export const HELP = `Usage: skill-evals [options]
 
 Response-only skill evaluations. Live runs require an explicit model.
@@ -14,7 +16,7 @@ Response-only skill evaluations. Live runs require an explicit model.
   --context MODE      full (default) or focused per-case references
   --effort LEVEL      Candidate reasoning: low (default), medium, high, xhigh
   --judge-effort LEVEL Judge reasoning (same choices; default: low)
-  --codex PATH        Override the project Codex executable (audited: 0.165.0)
+  --codex PATH        Override the project Codex executable (audited: ${AUDITED_CODEX_VERSION})
   --output PATH       New private JSON report; refuses overwrite
   --color MODE        auto (default), always or never; auto honors NO_COLOR
   --progress MODE     auto (TTY live/non-TTY plain), plain or none

@@ -5,4 +5,6 @@ export interface ProcessOptions {
   signal?: AbortSignal;
   env?: NodeJS.ProcessEnv;
   outputLimits?: { stdout: number; stderr: number };
+  onStdout?: (chunk: Buffer) => void;
+  termination?: 'process-group' | 'leader';
 }
