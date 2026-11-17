@@ -112,9 +112,16 @@ async function withDeadline<T>(work: Promise<T>, message: string): Promise<T> {
 }
 
 async function killAndWait(child: ChildProcess): Promise<void> {
-  const exited = once(child, 'exit');
-  child.kill('SIGKILL');
-  await exited;
+  if (child.exitCode !== null || child.signalCode !== null) return;
+
+  const controller = new AbortController();
+  const exited = once(child, 'exit', { signal: controller.signal });
+  try {
+    child.kill('SIGKILL');
+    await withDeadline(exited, 'Lock launcher did not exit after SIGKILL');
+  } finally {
+    controller.abort();
+  }
 }
 
 function killProcessGroup(child: ChildProcess): void {

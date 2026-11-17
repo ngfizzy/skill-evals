@@ -48,9 +48,9 @@ makes no model calls.
 
 ## Dedicated authentication service
 
-The internal `src/auth/` service provides login, local status and logout for a dedicated ChatGPT
-login. CLI and TUI authentication controls are not exposed yet. Its modules are packaged for
-internal use; package exports remain closed.
+Run `skill-evals auth login`, `skill-evals auth status` or `skill-evals auth logout` to manage the
+dedicated ChatGPT login. Login displays the sign-in URL. The evaluator still uses the existing Codex
+login. The authentication service is internal to the package.
 
 The store is `$XDG_DATA_HOME/skill-evals/codex-auth`, or `$HOME/.local/share/skill-evals/codex-auth`
 when `XDG_DATA_HOME` is unset. The service rejects a store that resolves to the normal `CODEX_HOME`,
@@ -67,23 +67,26 @@ descriptor preserves a surviving native process's lock. The service never delete
 explicitly unlocks a descriptor shared with a child.
 
 Auth operations get a fresh home, working directory, XDG paths and temporary directory, with an
-explicit environment allowlist. Their only credential access is a temporary `auth.json` symlink to
-the managed file. The auth service delegates temporary-directory cleanup to its guardian, including
-cancellation. Native logout removes that link; the service also removes its unchanged managed
-target. It preserves a credential file changed unexpectedly during logout. Errors use fixed reason
-codes; raw native diagnostics are not forwarded. Only validated official sign-in URLs are streamed
-to the caller.
+explicit environment allowlist. Codex starts browser login with an empty credential directory. The
+guardian verifies and publishes the staged login after the worker group stops. Native logout
+receives a temporary `auth.json` symlink to the managed file. The service removes the unchanged
+managed target and preserves a file changed unexpectedly during logout. The guardian owns temporary
+workspace cleanup, including cancellation. Errors use fixed reason codes. Only validated official
+sign-in URLs are streamed to the caller.
 
 Before exposing an auth link, the launcher creates an owner-only `.auth-context.json` cleanup record
 in the managed store. It contains workspace identity and the cleanup guardian's PID, never
 credentials. Before starting native authentication, the launcher transfers the same lock descriptor
 to a guardian and an authenticated worker. The worker and native Codex run in a process group whose
-ID is the guardian's live PID. The guardian first moves to a separate control group, established by
-a bounded startup helper. Its live PID reserves the worker group's numeric ID, so it cannot signal a
-group that reused an exited launcher's PID. On completion, timeout or parent loss, the guardian
-terminates and confirms exit of its worker group, removes the matching workspace and cleanup record,
-then exits to release its descriptor. It monitors parent loss through `getppid(2)`. The parent waits
-for cleanup before reporting operation success.
+ID is the guardian's live PID. The guardian moves back to its original group before authorizing the
+worker. A bounded startup helper creates a control group if the original group has exited. The
+guardian's live PID reserves the worker group's numeric ID, so it cannot signal a group that reused
+an exited launcher's PID. On completion, timeout or parent loss, the guardian terminates and
+confirms exit of its worker group, removes the matching workspace and cleanup record, then exits to
+release its descriptor. Linux supervisors adopt and reap orphaned descendants. On macOS ARM64, the
+supervisor queries kernel process status and confirms that any remaining group members have exited
+and are awaiting reaping. The guardian monitors parent loss through `getppid(2)`. It rechecks the
+login file under the lock after group shutdown and reports success only after cleanup completes.
 
 Context cleanup removes and verifies the auth link before deleting other temporary files. If cleanup
 fails, the guardian keeps the actual OS lock and retries cleanup; it never expires or steals

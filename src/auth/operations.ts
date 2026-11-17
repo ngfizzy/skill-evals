@@ -5,7 +5,12 @@ import { AUDITED_CODEX_VERSION_OUTPUT } from '../adaptors/codex-helpers.ts';
 import { isSameFile, readBounded, sha256, type FileIdentity } from '../utils/index.ts';
 
 import { AuthCleanup } from './cleanup.ts';
-import { createAuthContext, type AuthContext } from './context.ts';
+import {
+  createAuthContext,
+  createLoginContext,
+  stagedLoginStore,
+  type NativeAuthContext,
+} from './context.ts';
 import { AuthError } from './errors.ts';
 import { CleanupGuardian } from './guardian.ts';
 import { CredentialLock } from './lock.ts';
@@ -81,22 +86,32 @@ export class AuthLauncherJob {
     }
   }
 
-  private login(): Promise<AuthState> {
-    return this.withNativeSession(async (session) => {
+  private async login(): Promise<AuthState> {
+    const { store, workspace } = this.request;
+    const context = await createLoginContext(store, workspace);
+    try {
+      const session = new NativeAuthSession(this.request, this.lease, context, this.emit);
+      await session.verifyRuntime();
       await session.run('login');
-
-      if ((await this.store.inspectCredentials()) !== 'signed-in')
+      if ((await stagedLoginStore(store, workspace).inspectCredentials()) !== 'signed-in')
         throw new AuthError('login-required');
       return 'signed-in';
-    });
+    } finally {
+      await context.dispose();
+    }
   }
 
   private async logout(): Promise<AuthState> {
     const { authFile } = this.request.store;
     const before = await CredentialSnapshot.capture(authFile);
 
-    return this.withNativeSession(async (session) => {
+    const context = await createAuthContext(this.request.store, this.request.workspace);
+    try {
+      const session = new NativeAuthSession(this.request, this.lease, context, this.emit);
+      await session.verifyRuntime();
+      await context.verifyLink();
       await session.run('logout');
+      await context.verifyLink(true);
 
       // Delete only the exact credentials we saw. A concurrent re-login must survive.
       const unchanged =
@@ -108,17 +123,6 @@ export class AuthLauncherJob {
       // Codex removes its temporary auth.json symlink. Remove the managed target too.
       await unlink(authFile);
       return 'signed-out';
-    });
-  }
-
-  private async withNativeSession(
-    work: (session: NativeAuthSession) => Promise<AuthState>,
-  ): Promise<AuthState> {
-    const context = await createAuthContext(this.request.store, this.request.workspace);
-    try {
-      const session = new NativeAuthSession(this.request, this.lease, context, this.emit);
-      await session.verifyRuntime();
-      return await work(session);
     } finally {
       await context.dispose();
     }
@@ -130,7 +134,7 @@ class NativeAuthSession {
   constructor(
     private readonly request: AuthLauncherRequest,
     private readonly lease: CredentialLease,
-    private readonly context: AuthContext,
+    private readonly context: NativeAuthContext,
     private readonly emit: EventSink,
   ) {}
 
@@ -138,7 +142,6 @@ class NativeAuthSession {
     const version = await this.runNative(['--version'], VERSION_PROBE_TIMEOUT_MS);
     if (version.code !== 0 || version.stdout.trim() !== AUDITED_CODEX_VERSION_OUTPUT)
       throw new AuthError('unsupported-runtime');
-    await this.context.verifyLink();
   }
 
   async run(operation: 'login' | 'logout'): Promise<void> {
@@ -148,7 +151,6 @@ class NativeAuthSession {
       this.emit,
     );
     if (result.code !== 0) throw new AuthError('operation-failed');
-    await this.context.verifyLink(operation === 'logout');
   }
 
   private runNative(args: string[], timeoutMs: number, onEvent?: EventSink) {

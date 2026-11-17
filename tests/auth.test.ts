@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import * as childProcess from 'node:child_process';
 import { once } from 'node:events';
 import {
   chmod,
@@ -13,14 +13,18 @@ import {
   readFile,
 } from 'node:fs/promises';
 import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import { describe, test } from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { spyOn } from 'bun:test';
 
 import { AuthError, type AuthErrorCode } from '../src/auth/index.ts';
 import { AuthCleanup } from '../src/auth/cleanup.ts';
 import { createAuthContext } from '../src/auth/context.ts';
 import { LauncherEventReader } from '../src/auth/events.ts';
 import { CredentialLock } from '../src/auth/lock.ts';
-import { loginUrl } from '../src/auth/protocol.ts';
+import { AuthLauncherJob } from '../src/auth/operations.ts';
+import { loginUrl, readAuthRequest } from '../src/auth/protocol.ts';
 import { AuthStore } from '../src/auth/store.ts';
 
 import { AuthHarness, killAndWait, loginUrlListener } from './helpers/auth-harness.ts';
@@ -159,6 +163,66 @@ describe('createAuthContext', () => {
 });
 
 describe('cleanup ownership', () => {
+  test('a failed guardian spawn removes the starting record while the launcher owns the lease', async (t) => {
+    const auth = await AuthHarness.create(t);
+    const workspace = join(auth.root, 'failed spawn');
+    await mkdir(workspace, { mode: 0o700 });
+    const missing = join(workspace, 'nonexistent-executable');
+    const failedChild = new childProcess.ChildProcess();
+    Object.defineProperty(failedChild, 'stdout', { value: new PassThrough() });
+    const guardianSpawn = spyOn(childProcess, 'spawn').mockImplementation((() => {
+      const error = Object.assign(new Error('spawn failed'), { code: 'EAGAIN' });
+      queueMicrotask(() => failedChild.emit('error', error));
+      return failedChild;
+    }) as typeof childProcess.spawn);
+    try {
+      const requested = {
+        operation: 'login' as const,
+        store: auth.store,
+        nativeExecutable: missing,
+        timeoutMs: 1000,
+        lockWaitMs: 1000,
+        workspace,
+      };
+      await assert.rejects(
+        AuthLauncherJob.run(requested, () => {}),
+        authError('operation-failed'),
+      );
+      assert.equal(guardianSpawn.mock.calls.length, 1);
+    } finally {
+      guardianSpawn.mockRestore();
+    }
+    assert.equal(await AuthCleanup.pending(auth.store), false);
+    await assert.rejects(lstat(workspace), { code: 'ENOENT' });
+    assert.equal(await (await auth.service()).execute('status'), 'signed-out');
+  });
+
+  test('an unlaunched guardian can be recovered while another caller waits for status', async (t) => {
+    const auth = await AuthHarness.create(t);
+    const workspace = join(auth.root, 'startup');
+    await mkdir(workspace, { mode: 0o700 });
+    const launcher = await CredentialLock.acquire(auth.store);
+    try {
+      await AuthCleanup.begin(auth.store, workspace);
+      await AuthCleanup.prepareGuardian(auth.store, workspace);
+      await assert.rejects(
+        CredentialLock.recoverUnclaimed(auth.store, workspace),
+        authError('cleanup-required'),
+      );
+    } finally {
+      await launcher.release();
+    }
+
+    const service = await auth.service();
+    const status = service.execute('status');
+    await Bun.sleep(200);
+    await CredentialLock.recoverUnclaimed(auth.store, workspace);
+
+    assert.equal(await status, 'signed-out');
+    assert.equal(await AuthCleanup.pending(auth.store), false);
+    await assert.rejects(lstat(workspace), { code: 'ENOENT' });
+  });
+
   test('a relocated workspace keeps the store blocked until its auth link is removed', async (t) => {
     const auth = await AuthHarness.create(t);
     await auth.signIn();
@@ -254,9 +318,13 @@ describe('CredentialLock', () => {
   test('stays held by a child that inherited the descriptor after release', async (t) => {
     const auth = await AuthHarness.create(t);
     const lease = await CredentialLock.acquire(auth.store, undefined, 200);
-    const child = spawn(process.execPath, ['-e', 'console.log("READY");setInterval(()=>{},1000)'], {
-      stdio: ['ignore', 'pipe', 'inherit', lease.fd],
-    });
+    const child = childProcess.spawn(
+      process.execPath,
+      ['-e', 'console.log("READY");setInterval(()=>{},1000)'],
+      {
+        stdio: ['ignore', 'pipe', 'inherit', lease.fd],
+      },
+    );
     t.after(() => child.kill('SIGKILL'));
     await once(child.stdout!, 'data');
 
@@ -367,6 +435,26 @@ describe('LauncherEventReader', () => {
   });
 });
 
+test('launcher request preserves a split UTF-8 character and rejects an incomplete one', async () => {
+  const request = {
+    operation: 'login',
+    store: { directory: '/store', authFile: '/store/auth.json', normalDirectory: '/normal' },
+    nativeExecutable: '/bin/codex',
+    workspace: '/path with spacé',
+    timeoutMs: 1000,
+    lockWaitMs: 1000,
+  };
+  const bytes = Buffer.from(JSON.stringify(request));
+  const splitAt = bytes.indexOf(0xc3) + 1;
+  async function* chunks(complete: boolean) {
+    yield bytes.subarray(0, splitAt);
+    if (complete) yield bytes.subarray(splitAt);
+  }
+
+  assert.deepEqual(await readAuthRequest(chunks(true)), request);
+  await assert.rejects(readAuthRequest(chunks(false)), authError('operation-failed'));
+});
+
 describe('AuthService', () => {
   test('status reports signed-out for an empty store', async (t) => {
     const auth = await AuthHarness.create(t);
@@ -408,7 +496,7 @@ describe('AuthService', () => {
     await auth.assertNativeContextRemoved();
   });
 
-  test('login announces a URL only once its line is complete', async (t) => {
+  test('login announces a URL with split UTF-8 from stderr once its line is complete', async (t) => {
     const auth = await AuthHarness.create(t);
     const service = await auth.service('split-url');
     const urls: string[] = [];
@@ -419,7 +507,67 @@ describe('AuthService', () => {
       },
     });
 
-    assert.deepEqual(urls, [SYNTHETIC_LOGIN_URL]);
+    assert.deepEqual(urls, [SYNTHETIC_LOGIN_URL.replace('synthetic', 'synth%C3%A9tic')]);
+  });
+
+  test('login rejects staged credentials changed after the worker completed', async (t) => {
+    const auth = await AuthHarness.create(t);
+    await auth.signIn();
+    const service = await auth.service('late-credential-write');
+    const states: string[] = [];
+
+    await assert.rejects(
+      service.execute('login', {
+        onEvent: (event) => {
+          if (event.type === 'state') states.push(event.state);
+        },
+      }),
+      authError('invalid-credentials'),
+    );
+
+    assert.deepEqual(states, []);
+    assert.deepEqual(await auth.readCredentials(), SYNTHETIC_CREDENTIALS);
+    await auth.assertNativeContextRemoved();
+    await auth.assertLockAvailable();
+  });
+
+  test('guardian recovers the starting record when its expected launcher is gone', async (t) => {
+    const auth = await AuthHarness.create(t);
+    const workspace = join(auth.root, 'interrupted workspace');
+    await mkdir(workspace, { mode: 0o700 });
+    const lease = await CredentialLock.acquire(auth.store);
+    try {
+      await AuthCleanup.begin(auth.store, workspace);
+      await AuthCleanup.prepareGuardian(auth.store, workspace);
+      const script = fileURLToPath(new URL('../src/auth/guardian.ts', import.meta.url));
+      const child = childProcess.spawn(
+        process.execPath,
+        [
+          '--no-env-file',
+          '--no-install',
+          script,
+          JSON.stringify({
+            operation: 'login',
+            store: auth.store,
+            nativeExecutable: '/missing/native',
+            timeoutMs: 1000,
+            lockWaitMs: 1000,
+            workspace,
+          }),
+          // A guardian launched by this test can observe the parent mismatch without signaling it.
+          String(process.pid + 1),
+        ],
+        { stdio: ['ignore', 'pipe', 'inherit', lease.fd] },
+      );
+      t.after(() => killAndWait(child));
+      const [code] = await once(child, 'close', { signal: AbortSignal.timeout(5000) });
+      assert.equal(code, 2);
+      assert.equal(await AuthCleanup.pending(auth.store), false);
+      await assert.rejects(lstat(workspace), { code: 'ENOENT' });
+    } finally {
+      await lease.release();
+    }
+    assert.equal(await (await auth.service()).execute('status'), 'signed-out');
   });
 
   test('login failure keeps native diagnostics out of the error', async (t) => {
@@ -456,14 +604,14 @@ describe('AuthService', () => {
   test('a queued caller cannot enter while a descendant retains a writable credential handle', async (t) => {
     const auth = await AuthHarness.create(t);
     const service = await auth.service('writer-descendant');
-    const observerPath = new URL('./helpers/lock-observer.ts', import.meta.url).pathname;
-    let observer: ReturnType<typeof spawn> | undefined;
+    const observerPath = fileURLToPath(new URL('./helpers/lock-observer.ts', import.meta.url));
+    let observer: ReturnType<typeof childProcess.spawn> | undefined;
     let observed: Promise<number | null> | undefined;
     await assert.rejects(
       service.execute('login', {
         onEvent(event) {
           if (event.type === 'login-url') {
-            observer = spawn(
+            observer = childProcess.spawn(
               process.execPath,
               [
                 '--no-env-file',

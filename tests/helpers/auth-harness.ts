@@ -67,7 +67,7 @@ export class AuthHarness {
       [
         `#!${process.execPath}`,
         `import { runFakeCodexAuth } from ${JSON.stringify(helper('fake-codex-auth.ts'))};`,
-        `await runFakeCodexAuth(${JSON.stringify(mode)}, ${JSON.stringify(this.tracePath)});`,
+        `await runFakeCodexAuth(${JSON.stringify(mode)}, ${JSON.stringify(this.tracePath)}, ${JSON.stringify(this.store.directory)});`,
       ].join('\n'),
     );
     await chmod(nativeExecutable, 0o700);

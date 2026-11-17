@@ -17,11 +17,15 @@ const CODEX_TARGETS: Record<string, string> = {
 
 export function supportedPlatform(): SupportedPlatform {
   const key = `${process.platform}-${process.arch}`;
-  if (!Object.hasOwn(CODEX_TARGETS, key)) throw new AuthError('unsupported-runtime');
+  if (!isAuditedAuthPlatform()) throw new AuthError('unsupported-runtime');
 
   return {
     os: process.platform as SupportedPlatform['os'],
     arch: process.arch as SupportedPlatform['arch'],
     codexTarget: CODEX_TARGETS[key]!,
   };
+}
+
+export function isAuditedAuthPlatform(): boolean {
+  return Object.hasOwn(CODEX_TARGETS, `${process.platform}-${process.arch}`);
 }

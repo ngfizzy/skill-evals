@@ -4,7 +4,6 @@
 import { spawn } from 'node:child_process';
 import {
   fstatSync,
-  readlinkSync,
   openSync,
   closeSync,
   existsSync,
@@ -35,6 +34,7 @@ export type FakeCodexAuthMode =
   // Login writes credentials, then never exits and leaves a child holding its pipes.
   | 'descendant'
   | 'writer-descendant'
+  | 'late-credential-write'
   | 'blocked-cleanup'
   | 'kill-guardian'
   // Logout rewrites the credentials with different contents before unlinking its link.
@@ -67,27 +67,30 @@ export const LEAKED_DIAGNOSTIC = 'SYNTHETIC_CREDENTIAL_MUST_NOT_LEAK';
 // The launcher passes the credential lease to native Codex as fd 3.
 const INHERITED_LOCK_FD = 3;
 
-export async function runFakeCodexAuth(mode: FakeCodexAuthMode, tracePath: string): Promise<void> {
+export async function runFakeCodexAuth(
+  mode: FakeCodexAuthMode,
+  tracePath: string,
+  store: string,
+): Promise<void> {
   if (process.argv.includes('--version')) {
     console.log(AUDITED_CODEX_VERSION_OUTPUT);
     process.exit(0);
   }
 
   const authFile = join(process.env.CODEX_HOME!, 'auth.json');
-  writeTrace(tracePath);
+  const ownership = JSON.parse(readFileSync(join(store, '.auth-context.json'), 'utf8'));
+  writeTrace(tracePath, ownership.guardian);
 
   const operation = process.argv.at(-1);
-  if (operation === 'login') await login(mode, authFile, tracePath);
+  if (operation === 'login') await login(mode, authFile, tracePath, ownership);
   if (operation === 'logout') logout(mode, authFile);
 }
 
-function writeTrace(path: string): void {
-  const store = dirname(readlinkSync(join(process.env.CODEX_HOME!, 'auth.json')));
-  const ownership = JSON.parse(readFileSync(join(store, '.auth-context.json'), 'utf8'));
+function writeTrace(path: string, guardian: number): void {
   const trace: FakeCodexAuthTrace = {
     nativeGroup: Libc.load().processGroupId(),
     nativePid: process.pid,
-    guardian: ownership.guardian,
+    guardian,
     codexHome: process.env.CODEX_HOME!,
     environment: Object.keys(process.env),
     lockInode: fstatSync(INHERITED_LOCK_FD).ino,
@@ -95,7 +98,18 @@ function writeTrace(path: string): void {
   writeFileSync(path, JSON.stringify(trace));
 }
 
-async function login(mode: FakeCodexAuthMode, authFile: string, tracePath: string): Promise<void> {
+async function login(
+  mode: FakeCodexAuthMode,
+  authFile: string,
+  tracePath: string,
+  ownership: { guardian: number; workspace: string },
+): Promise<void> {
+  // Codex 0.165.0 logs out before starting OAuth, which unlinks an existing auth.json.
+  try {
+    unlinkSync(authFile);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
   await printLoginUrl(mode);
   if (mode === 'failure') {
     console.error(LEAKED_DIAGNOSTIC);
@@ -103,6 +117,11 @@ async function login(mode: FakeCodexAuthMode, authFile: string, tracePath: strin
   }
 
   writeFileSync(authFile, JSON.stringify(SYNTHETIC_CREDENTIALS), { mode: 0o600 });
+
+  if (mode === 'late-credential-write') {
+    await leaveLateCredentialWriter(authFile, ownership.guardian);
+    process.exit(0);
+  }
 
   if (mode === 'writer-descendant') {
     const writes = join(dirname(tracePath), 'descendant-writes');
@@ -129,15 +148,13 @@ async function login(mode: FakeCodexAuthMode, authFile: string, tracePath: strin
   }
 
   if (mode === 'kill-guardian') {
-    const store = dirname(realpathSync(authFile));
-    const record = JSON.parse(readFileSync(join(store, '.auth-context.json'), 'utf8'));
-    if (!Number.isSafeInteger(record.guardian) || record.guardian <= 1) process.exit(2);
-    process.kill(record.guardian, 'SIGKILL');
+    if (!Number.isSafeInteger(ownership.guardian) || ownership.guardian <= 1) process.exit(2);
+    process.kill(ownership.guardian, 'SIGKILL');
     process.exit(0);
   }
 
   if (mode === 'blocked-cleanup') {
-    const workspace = dirname(dirname(process.env.CODEX_HOME!));
+    const { workspace } = ownership;
     renameSync(workspace, workspace + '.moved');
     process.exit(0);
   }
@@ -161,10 +178,49 @@ async function login(mode: FakeCodexAuthMode, authFile: string, tracePath: strin
 async function printLoginUrl(mode: FakeCodexAuthMode): Promise<void> {
   if (mode !== 'split-url') return console.log(SYNTHETIC_LOGIN_URL);
 
-  const splitAt = SYNTHETIC_LOGIN_URL.indexOf('synthetic');
-  process.stdout.write(SYNTHETIC_LOGIN_URL.slice(0, splitAt));
+  const url = Buffer.from(SYNTHETIC_LOGIN_URL.replace('synthetic', 'synthétic'));
+  const splitAt = url.indexOf(0xc3) + 1;
+  process.stderr.write(url.subarray(0, splitAt));
   await Bun.sleep(50);
-  console.log(SYNTHETIC_LOGIN_URL.slice(splitAt));
+  process.stderr.write(Buffer.concat([url.subarray(splitAt), Buffer.from('\n')]));
+}
+
+async function leaveLateCredentialWriter(authFile: string, guardian: number): Promise<void> {
+  const workerHome = process.env.HOME!;
+  const descriptor = openSync(authFile, 'r+');
+  try {
+    const writer = spawn(
+      process.execPath,
+      [
+        '--no-env-file',
+        '-e',
+        `const fs = require('node:fs');
+        process.kill(${JSON.stringify(guardian)}, 'SIGSTOP');
+        console.log('paused');
+        try {
+          const deadline = Date.now() + 5000;
+          while (fs.existsSync(${JSON.stringify(workerHome)}) && Date.now() < deadline) {
+            await Bun.sleep(5);
+          }
+          if (fs.existsSync(${JSON.stringify(workerHome)})) process.exitCode = 1;
+          else {
+            fs.ftruncateSync(4, 0);
+            fs.writeSync(4, 'invalid-after-worker-check');
+          }
+        } finally {
+          process.kill(${JSON.stringify(guardian)}, 'SIGCONT');
+        }`,
+      ],
+      { stdio: ['ignore', 'pipe', 'ignore', 'ignore', descriptor] },
+    );
+    await new Promise<void>((resolve, reject) => {
+      writer.stdout!.once('data', () => resolve());
+      writer.once('exit', () => reject(new Error('Late writer exited before pausing guardian')));
+      writer.once('error', reject);
+    });
+  } finally {
+    closeSync(descriptor);
+  }
 }
 
 function logout(mode: FakeCodexAuthMode, authFile: string): void {

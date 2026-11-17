@@ -4,9 +4,11 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { isAuditedAuthPlatform } from '../src/auth/platform.ts';
+
 const temporary = mkdtempSync(join(tmpdir(), 'skill-evals-install-'));
-const execute = (command: string, args: string[], cwd: string): string => {
-  const result = spawnSync(command, args, { cwd, encoding: 'utf8', timeout: 120000 });
+const execute = (command: string, args: string[], cwd: string, env = process.env): string => {
+  const result = spawnSync(command, args, { cwd, env, encoding: 'utf8', timeout: 120000 });
   assert.ifError(result.error);
   assert.equal(result.status, 0, result.stderr + result.stdout);
   return result.stdout;
@@ -47,6 +49,7 @@ try {
 
   const executable = join(prefix, 'node_modules', '.bin', 'skill-evals');
   assert.match(execute(executable, ['--help'], temporary), /Usage: skill-evals/);
+  assert.match(execute(executable, ['auth', '--help'], temporary), /login\|status\|logout/);
 
   const root = join(prefix, 'node_modules', 'skill-evals', 'examples', 'basic');
   const list = execute(executable, ['--root', root, '--list'], temporary);
@@ -87,34 +90,35 @@ assert.equal(agent.version, 'codex-cli 0.165.0');
   execute(process.execPath, ['--no-env-file', '--no-install', probe], temporary);
   console.log('Installed Codex preflight passed outside checkout with no Codex or Node on PATH.');
 
-  writeFileSync(
-    probe,
-    `import assert from 'node:assert/strict';
-import {mkdtemp,rm,writeFile} from 'node:fs/promises';
-import {join} from 'node:path';
-import {tmpdir} from 'node:os';
-const {AuthService}=await import(${JSON.stringify(join(prefix, 'node_modules', 'skill-evals', 'src', 'auth', 'index.ts'))});
-const {packagedAuthRuntime}=await import(${JSON.stringify(join(prefix, 'node_modules', 'skill-evals', 'src', 'auth', 'runtime.ts'))});
-const {ProcessManager}=await import(${JSON.stringify(join(prefix, 'node_modules', 'skill-evals', 'src', 'process', 'index.ts'))});
-const processManager=new ProcessManager();
-const root=await mkdtemp(join(tmpdir(),'installed-auth-'));
-try {
-const env={HOME:root,XDG_DATA_HOME:root};
-const service=new AuthService({env});
-assert.equal(await service.execute('status'),'signed-out');
-assert.equal((await processManager.run([packagedAuthRuntime(),'--version'],{input:'',directory:root,timeoutMs:20000})).trim(),'codex-cli 0.165.0');
-const store=join(root,'skill-evals','codex-auth');
-await writeFile(join(store,'auth.json'),JSON.stringify({auth_mode:'chatgpt',OPENAI_API_KEY:null,tokens:{id_token:'synthetic-id',access_token:'synthetic-access',refresh_token:'synthetic-refresh'}}),{mode:0o600});
-assert.equal(await service.execute('status'),'signed-in');
-assert.equal(await service.execute('logout'),'signed-out');
-assert.equal(await Bun.file(join(store,'auth.json')).exists(),false);
-} finally {await rm(root,{recursive:true,force:true});}
-`,
-  );
-  execute(process.execPath, ['--no-env-file', '--no-install', probe], temporary);
-  console.log(
-    'Installed auth service passed: separate synthetic store, native runtime and logout. No account credentials used.',
-  );
+  if (isAuditedAuthPlatform()) {
+    const data = join(temporary, 'auth-fixture');
+    const env = {
+      ...process.env,
+      HOME: data,
+      XDG_DATA_HOME: data,
+      CODEX_HOME: join(data, 'normal'),
+    };
+    assert.equal(execute(executable, ['auth', 'status'], temporary, env).trim(), 'signed-out');
+    const credentials = join(data, 'skill-evals', 'codex-auth', 'auth.json');
+    writeFileSync(
+      credentials,
+      JSON.stringify({
+        auth_mode: 'chatgpt',
+        tokens: {
+          id_token: 'synthetic-id',
+          access_token: 'synthetic-access',
+          refresh_token: 'synthetic-refresh',
+        },
+      }),
+      { mode: 0o600 },
+    );
+    assert.equal(execute(executable, ['auth', 'status'], temporary, env).trim(), 'signed-in');
+    assert.equal(execute(executable, ['auth', 'logout'], temporary, env).trim(), 'signed-out');
+    assert.equal(await Bun.file(credentials).exists(), false);
+    console.log('Installed CLI auth status and logout passed using a separate synthetic store.');
+  } else {
+    console.log('Installed auth smoke skipped outside the audited platform matrix.');
+  }
 
   writeFileSync(
     probe,

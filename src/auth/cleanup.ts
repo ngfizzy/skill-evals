@@ -74,7 +74,7 @@ export class AuthCleanup {
         const owned = await AuthCleanup.readRecord(store);
         if (!owned || owned.record.workspace !== workspace) break;
         if (owned.record.phase === 'launcher')
-          return await AuthCleanup.removeWorkspace(store, workspace);
+          return await AuthCleanup.removeWorkspace(store, owned);
         if (performance.now() - started >= 3000) throw new AuthError('cleanup-required');
         await delay(10);
       }
@@ -86,6 +86,17 @@ export class AuthCleanup {
 
   // Call after the launcher's process group is confirmed gone, while fd 3 still owns the lock.
   static async finishGuardian(store: AuthStoreLocation, workspace: string): Promise<void> {
+    await AuthCleanup.removeWorkspace(store, await AuthCleanup.guardianRecord(store, workspace));
+  }
+
+  static async verifyGuardianWorkspace(store: AuthStoreLocation, workspace: string): Promise<void> {
+    await AuthCleanup.verifyWorkspace(store, await AuthCleanup.guardianRecord(store, workspace));
+  }
+
+  private static async guardianRecord(
+    store: AuthStoreLocation,
+    workspace: string,
+  ): Promise<OwnedCleanup> {
     const owned = await AuthCleanup.readRecord(store);
     if (
       !owned ||
@@ -94,7 +105,15 @@ export class AuthCleanup {
       owned.record.guardian !== process.pid
     )
       throw new AuthError('cleanup-required');
-    await AuthCleanup.removeWorkspace(store, workspace);
+    return owned;
+  }
+
+  // Only a caller holding the lease may recover an unclaimed record.
+  static async finishUnclaimed(store: AuthStoreLocation, workspace: string): Promise<void> {
+    const owned = await AuthCleanup.readRecord(store);
+    if (!owned || owned.record.workspace !== workspace || owned.record.phase !== 'starting')
+      throw new AuthError('cleanup-required');
+    await AuthCleanup.removeWorkspace(store, owned);
   }
 
   private static async replaceRecord(
@@ -120,15 +139,13 @@ export class AuthCleanup {
     }
   }
 
-  private static async removeWorkspace(store: AuthStoreLocation, workspace: string): Promise<void> {
+  private static async removeWorkspace(
+    store: AuthStoreLocation,
+    owned: OwnedCleanup,
+  ): Promise<void> {
     try {
-      const owned = await AuthCleanup.readRecord(store);
-      if (
-        !owned ||
-        owned.record.workspace !== workspace ||
-        !isSameFile(owned.record, await lstat(workspace))
-      )
-        throw new AuthError('cleanup-required');
+      const { workspace } = owned.record;
+      await AuthCleanup.verifyWorkspace(store, owned);
       await rm(workspace, { recursive: true, force: true });
       if (await pathExists(workspace)) throw new AuthError('cleanup-required');
       if (!isSameFile(owned.identity, await lstat(AuthCleanup.path(store))))
@@ -137,6 +154,19 @@ export class AuthCleanup {
     } catch {
       throw new AuthError('cleanup-required');
     }
+  }
+
+  private static async verifyWorkspace(
+    store: AuthStoreLocation,
+    owned: OwnedCleanup,
+  ): Promise<void> {
+    const identity = await lstat(owned.record.workspace);
+    AuthStore.assertPrivateDirectory(identity);
+    if (
+      !isSameFile(owned.record, identity) ||
+      !isSameFile(owned.identity, await lstat(AuthCleanup.path(store)))
+    )
+      throw new AuthError('cleanup-required');
   }
 
   private static async readRecord(store: AuthStoreLocation): Promise<OwnedCleanup | undefined> {

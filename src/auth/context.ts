@@ -8,13 +8,45 @@ import type { AuthStoreLocation } from './types.ts';
 
 export const SYSTEM_PATH = '/usr/bin:/bin';
 
-export interface AuthContext {
+export interface NativeAuthContext {
   directory: string;
   home: string;
   codexHome: string;
   env: NodeJS.ProcessEnv;
-  verifyLink(missingAllowed?: boolean): Promise<void>;
   dispose(): Promise<void>;
+}
+
+export interface AuthContext extends NativeAuthContext {
+  verifyLink(missingAllowed?: boolean): Promise<void>;
+}
+
+// Native login can remove and recreate auth.json. Keep its new file in the
+// operation workspace until its guardian has stopped and verified all writers.
+export function stagedLoginStore(store: AuthStoreLocation, workspace: string): AuthStore {
+  const directory = join(workspace, 'login-codex');
+  return new AuthStore({ ...store, directory, authFile: join(directory, 'auth.json') });
+}
+
+export async function createLoginContext(
+  store: AuthStoreLocation,
+  workspace: string,
+): Promise<NativeAuthContext> {
+  await new AuthStore(store).assertValid();
+  await AuthCleanup.begin(store, workspace);
+  const directory = await mkdtemp(join(workspace, 'context-'));
+  const home = join(directory, 'home');
+  const codexHome = stagedLoginStore(store, workspace).location.directory;
+  await mkdir(home, { mode: 0o700 });
+  await mkdir(codexHome, { mode: 0o700 });
+  return {
+    directory,
+    home,
+    codexHome,
+    env: isolatedEnvironment(directory, home, codexHome),
+    async dispose() {
+      await rm(directory, { recursive: true, force: true });
+    },
+  };
 }
 
 // The caller owns the credential lease for this context's complete lifetime.

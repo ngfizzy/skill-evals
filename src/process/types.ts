@@ -1,3 +1,8 @@
+export class ProcessTeardownError extends Error {}
+
+export type SupervisedOutcome =
+  { code: number | null; signal: NodeJS.Signals | null } | { error: 'spawn' | 'teardown' };
+
 export interface ProcessOptions {
   input: string;
   timeoutMs: number;

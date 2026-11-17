@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +9,7 @@ import { AuthCleanup } from './cleanup.ts';
 import { launcherEnvironment } from './context.ts';
 import { AuthError } from './errors.ts';
 import { LauncherEventReader } from './events.ts';
+import { CredentialLock } from './lock.ts';
 import { packagedAuthRuntime } from './runtime.ts';
 import { AuthStore } from './store.ts';
 import type {
@@ -48,9 +49,11 @@ export class AuthService {
     if (options.signal?.aborted) throw new AuthError('interrupted');
 
     const store = await AuthStore.resolve(this.options.env);
-    const workspace = await mkdtemp(join(tmpdir(), 'skill-evals-auth-operation-')).catch(() => {
-      throw new AuthError('operation-failed');
-    });
+    const workspace = await realpath(tmpdir())
+      .then((root) => mkdtemp(join(root, 'skill-evals-auth-operation-')))
+      .catch(() => {
+        throw new AuthError('operation-failed');
+      });
     let cleanupSafe = true;
     try {
       const home = join(workspace, 'launcher-home');
@@ -79,7 +82,12 @@ export class AuthService {
       return events.finalState();
     } finally {
       if (!cleanupSafe) throw new AuthError('cleanup-required');
-      await AuthCleanup.finish(store.location, workspace);
+      try {
+        await AuthCleanup.finish(store.location, workspace);
+      } catch {
+        // The launcher can die just after writing 'starting', before it spawns the guardian.
+        await CredentialLock.recoverUnclaimed(store.location, workspace);
+      }
     }
   }
 

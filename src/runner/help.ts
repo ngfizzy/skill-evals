@@ -1,6 +1,7 @@
 import { AUDITED_CODEX_VERSION } from '../adaptors/codex-helpers.ts';
 
 export const HELP = `Usage: skill-evals [options]
+       skill-evals auth <login|status|logout>
 
 Response-only skill evaluations. Live runs require an explicit model.
   --root SOURCE       Directory or git+https://HOST/OWNER/REPO.git[#REV]; repeatable

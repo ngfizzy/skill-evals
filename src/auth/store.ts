@@ -1,5 +1,15 @@
+import { randomUUID } from 'node:crypto';
 import { constants, type Stats } from 'node:fs';
-import { lstat, mkdir, open, realpath, statfs, type FileHandle } from 'node:fs/promises';
+import {
+  lstat,
+  mkdir,
+  open,
+  realpath,
+  rename,
+  statfs,
+  unlink,
+  type FileHandle,
+} from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 
@@ -70,6 +80,32 @@ export class AuthStore {
 
   // Call only while the store lease is held. Token values never leave this boundary.
   async inspectCredentials(): Promise<AuthState> {
+    return (await this.readCredentials()) === undefined ? 'signed-out' : 'signed-in';
+  }
+
+  // Run after the login processes have stopped. The replacement is staged in the
+  // store directory so publication is atomic even when the workspace is on another mount.
+  async publishLogin(staged: AuthStore): Promise<void> {
+    const credentials = await staged.readCredentials();
+    if (credentials === undefined) throw new AuthError('login-required');
+    await this.assertValid();
+    const temporary = join(this.location.directory, `.${AUTH_FILE_NAME}.${randomUUID()}`);
+    const file = await open(temporary, 'wx', PRIVATE_FILE_MODE);
+    try {
+      try {
+        await file.writeFile(credentials);
+      } finally {
+        await file.close();
+      }
+      await rename(temporary, this.location.authFile);
+    } finally {
+      await unlink(temporary).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== 'ENOENT') throw error;
+      });
+    }
+  }
+
+  private async readCredentials(): Promise<string | undefined> {
     await this.assertValid();
 
     let file: FileHandle;
@@ -79,7 +115,7 @@ export class AuthStore {
         constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
       );
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'signed-out';
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
       throw new AuthError('invalid-store');
     }
 
@@ -87,7 +123,7 @@ export class AuthStore {
       const text = await this.readCredentialFile(file);
       if (!chatgptCredentialsSchema.safeParse(JSON.parse(text)).success)
         throw new AuthError('invalid-credentials');
-      return 'signed-in';
+      return text;
     } catch (error) {
       if (error instanceof AuthError) throw error;
       throw new AuthError('invalid-credentials');

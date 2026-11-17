@@ -9,6 +9,7 @@ import { Operator } from '../operator/index.ts';
 import { readReport, ReportWriter, withSummary } from '../report/index.ts';
 import { message, singleLine } from '../utils/index.ts';
 
+import { runAuthCommand } from './auth-command.ts';
 import { consoleIO } from './console-io.ts';
 import { HELP } from './help.ts';
 import { prepareRun, withCatalog } from './helpers.ts';
@@ -20,6 +21,7 @@ export class Run {
 
   async execute(args: string[], signal?: AbortSignal): Promise<number> {
     try {
+      if (args[0] === 'auth') return await runAuthCommand(args.slice(1), this.io, signal);
       const options = parseOptions(args);
       if (options.help) return this.help();
 

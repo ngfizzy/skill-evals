@@ -32,22 +32,35 @@ export class CredentialLock implements CredentialLease {
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new AuthError('lock-failed');
 
     const path = join(store.directory, LOCK_FILE_NAME);
-    const file = await CredentialLock.openLockFile(path);
+    const started = performance.now();
     try {
-      const started = performance.now();
-      await CredentialLock.waitForLock(file, path, timeoutMs, signal);
-      while (await AuthCleanup.pending(store)) {
-        CredentialLock.throwIfInterrupted(signal);
+      while (true) {
+        const file = await CredentialLock.openLockFile(path);
+        try {
+          await CredentialLock.waitForLock(
+            file,
+            path,
+            timeoutMs - (performance.now() - started),
+            signal,
+          );
+          CredentialLock.throwIfInterrupted(signal);
+          if (!(await AuthCleanup.pending(store))) {
+            CredentialLock.throwIfInterrupted(signal);
+            return new CredentialLock(file);
+          }
+        } catch (error) {
+          await file.close();
+          throw error;
+        }
+        // A matching recovery caller needs to acquire the lease before it can clear a record.
+        await file.close();
         const remainingMs = timeoutMs - (performance.now() - started);
         if (remainingMs <= 0) throw new AuthError('cleanup-required');
         await delay(Math.min(POLL_INTERVAL_MS, remainingMs), undefined, { signal }).catch(() => {
           throw new AuthError('interrupted');
         });
       }
-      CredentialLock.throwIfInterrupted(signal);
-      return new CredentialLock(file);
     } catch (error) {
-      await file.close();
       throw error instanceof AuthError ? error : new AuthError('lock-failed');
     }
   }
@@ -70,6 +83,24 @@ export class CredentialLock implements CredentialLease {
         closeSync(fd);
       },
     };
+  }
+
+  // Once the launcher has exited, a fresh exclusive lease proves nobody inherited a
+  // live descriptor. Only the matching pre-worker record can be recovered this way.
+  static async recoverUnclaimed(store: AuthStoreLocation, workspace: string): Promise<void> {
+    try {
+      await new AuthStore(store).assertValid();
+      const path = join(store.directory, LOCK_FILE_NAME);
+      const file = await CredentialLock.openLockFile(path);
+      try {
+        await CredentialLock.waitForLock(file, path, 250);
+        await AuthCleanup.finishUnclaimed(store, workspace);
+      } finally {
+        await file.close();
+      }
+    } catch {
+      throw new AuthError('cleanup-required');
+    }
   }
 
   async release(): Promise<void> {

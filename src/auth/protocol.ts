@@ -61,15 +61,17 @@ export function loginUrl(text: string): string | undefined {
 export async function readAuthRequest(
   input: AsyncIterable<string | Buffer>,
 ): Promise<AuthLauncherRequest> {
-  let text = '';
-  for await (const chunk of input) {
-    text += String(chunk);
-    if (Buffer.byteLength(text) > MAX_LAUNCHER_REQUEST_BYTES)
-      throw new AuthError('operation-failed');
-  }
-
   try {
-    return authRequestSchema.parse(JSON.parse(text));
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    let text = '';
+    let bytes = 0;
+    for await (const chunk of input) {
+      const buffer = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+      bytes += buffer.length;
+      if (bytes > MAX_LAUNCHER_REQUEST_BYTES) throw new AuthError('operation-failed');
+      text += decoder.decode(buffer, { stream: true });
+    }
+    return authRequestSchema.parse(JSON.parse(text + decoder.decode()));
   } catch {
     throw new AuthError('operation-failed');
   }

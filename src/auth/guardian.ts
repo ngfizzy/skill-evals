@@ -1,15 +1,18 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn } from 'node:child_process';
+import { writeSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
-import { MAX_OUTPUT, ProcessManager } from '../process/index.ts';
+import { OwnedProcessGroup } from '../process/group.ts';
+import { MAX_OUTPUT } from '../process/index.ts';
 
-import { launcherEnvironment } from './context.ts';
+import { launcherEnvironment, stagedLoginStore } from './context.ts';
 import { AuthCleanup } from './cleanup.ts';
 import { AuthError } from './errors.ts';
 import { LauncherEventReader } from './events.ts';
-import { Libc } from './libc.ts';
+import { CredentialLock } from './lock.ts';
 import { authRequestSchema, serializeAuthEvent } from './protocol.ts';
+import { AuthStore } from './store.ts';
 import type { AuthEvent, AuthLauncherRequest } from './types.ts';
 
 export class CleanupGuardian {
@@ -37,7 +40,7 @@ export class CleanupGuardian {
     const events = new LauncherEventReader(emit);
     try {
       await new Promise<void>((resolve, reject) => {
-        child.once('error', () => reject(new AuthError('cleanup-required')));
+        child.once('error', () => reject(new AuthError('operation-failed')));
         child.stdout!.on('data', (chunk: Buffer) => {
           try {
             events.consume(chunk);
@@ -51,6 +54,10 @@ export class CleanupGuardian {
         });
       });
       events.finalState();
+    } catch (error) {
+      // A failed spawn left the lease here and could not authorize a worker.
+      if (!child.pid) await AuthCleanup.finishUnclaimed(request.store, request.workspace);
+      throw error;
     } finally {
       // On transport failure, let the guardian observe our exit and stop its own worker group.
       // Never kill the keeper and drop its descriptor before its writers are stopped.
@@ -60,17 +67,12 @@ export class CleanupGuardian {
   }
 }
 
-// The guardian's live PID reserves the worker group's ID even after its workers exit. It moves
-// into a separate control group before authenticated work begins, so killing its own PID-named
-// group cannot kill the guardian or a group that reused a dead launcher's PID.
 class GuardianRun {
-  private readonly libc = Libc.load();
-  private worker: ChildProcess | undefined;
-  private anchor: ChildProcess | undefined;
-  private separated = false;
+  private claimed = false;
   private stopping = false;
-  private result: number | undefined;
+  private result = 0;
   private events: LauncherEventReader | undefined;
+  private stopWorker: (() => Promise<void>) | undefined;
   private workerClosed: Promise<void> | undefined;
   private parentPoll: ReturnType<typeof setInterval> | undefined;
   private deadline: ReturnType<typeof setTimeout> | undefined;
@@ -81,157 +83,140 @@ class GuardianRun {
   ) {}
 
   async start(): Promise<void> {
+    const { store, workspace } = this.request;
     try {
-      if (this.libc.parentProcessId() !== this.launcher) throw new AuthError('cleanup-required');
-      await AuthCleanup.claim(this.request.store, this.request.workspace);
-      this.libc.moveToGroup(0);
-      this.worker = spawn(
+      // Check descriptor identity before using it as authority to recover the record.
+      await CredentialLock.inherit(store, 3);
+    } catch {
+      this.report({ type: 'error', code: 'cleanup-required' });
+      process.exit(2);
+    }
+
+    try {
+      if (OwnedProcessGroup.parentPid() !== this.launcher) throw new AuthError('interrupted');
+      await AuthCleanup.claim(store, workspace);
+      this.claimed = true;
+      await this.startWorker();
+    } catch {
+      await this.stop(2);
+    }
+  }
+
+  private async startWorker(): Promise<void> {
+    const group = new OwnedProcessGroup();
+    const env = launcherEnvironment(this.request.workspace);
+    const { child, exited } = await group.start(() => {
+      const worker = spawn(
         process.execPath,
         ['--no-env-file', '--no-install', fileURLToPath(new URL('./worker.ts', import.meta.url))],
-        {
-          env: launcherEnvironment(this.request.workspace),
-          stdio: ['pipe', 'pipe', 'ignore', 3],
-        },
+        { env, stdio: ['pipe', 'pipe', 'ignore', 3] },
       );
-      const worker = this.worker;
-      this.workerClosed = new Promise<void>((resolve) => {
-        worker.once('close', () => resolve());
-        worker.once('error', () => resolve());
-      });
-      let startupFailed = false;
-      this.worker.once('error', () => {
-        startupFailed = true;
-      });
+      this.workerClosed = new Promise<void>((resolve) => worker.once('close', () => resolve()));
+      worker.stdin!.on('error', () => void this.stop(2));
+      return worker;
+    }, env);
+    this.stopWorker = () => group.stop(exited);
 
-      this.anchor = spawn(
-        process.execPath,
-        ['--no-env-file', '--no-install', fileURLToPath(import.meta.url), '--anchor'],
-        { env: launcherEnvironment(this.request.workspace), stdio: ['ignore', 'pipe', 'ignore'] },
-      );
-      await waitForAnchor(this.anchor);
-      if (!this.anchor.pid || startupFailed || this.worker.exitCode !== null)
-        throw new AuthError('cleanup-required');
-      this.libc.moveToGroup(this.anchor.pid);
-      if (this.libc.processGroupId() === process.pid) throw new AuthError('cleanup-required');
-      this.separated = true;
-      this.anchor.kill('SIGKILL');
-      this.anchor.stdout!.destroy();
+    this.events = new LauncherEventReader((event) => {
+      if (event.type === 'login-url') this.report(event);
+      if (event.type === 'state') void this.stop(0);
+      if (event.type === 'error') void this.stop(2);
+    });
+    let bytes = 0;
+    child.stdout!.on('data', (chunk: Buffer) => {
+      try {
+        bytes += chunk.length;
+        if (bytes > MAX_OUTPUT) throw new AuthError('operation-failed');
+        this.events!.consume(chunk);
+      } catch {
+        void this.stop(2);
+      }
+    });
+    void exited.then(({ code }) => {
+      if (!this.stopping) void this.stop(code ?? 2);
+    });
 
-      let bytes = 0;
-      this.events = new LauncherEventReader((event) => {
-        process.stdout.write(serializeAuthEvent(event));
-        if (event.type === 'state') void this.stop(0);
-        if (event.type === 'error') void this.stop(2);
-      });
-      this.worker.stdout!.on('data', (chunk: Buffer) => {
-        try {
-          bytes += chunk.length;
-          if (bytes > MAX_OUTPUT) throw new AuthError('operation-failed');
-          this.events!.consume(chunk);
-        } catch {
-          void this.stop(2);
-        }
-      });
-      this.worker.once('error', () => void this.stop(2));
-      this.worker.once('exit', (code) => {
-        if (!this.stopping) void this.stop(code ?? 2);
-      });
-      this.deadline = setTimeout(() => void this.stop(2), this.request.timeoutMs + 25_000);
-      this.parentPoll = setInterval(() => {
-        if (this.libc.parentProcessId() !== this.launcher) void this.stop(2);
-      }, 25);
-      this.worker.stdin!.on('error', () => void this.stop(2));
-      this.worker.stdin!.end(JSON.stringify(this.request));
-    } catch {
-      if (this.separated) {
-        await this.stop(2);
-        return;
-      }
-      this.worker?.kill('SIGKILL');
-      this.anchor?.kill('SIGKILL');
-      process.stdout.write(serializeAuthEvent({ type: 'error', code: 'cleanup-required' }));
-      // No request was delivered to the worker before group separation. Retain the lease if
-      // even startup cleanup cannot be verified.
-      while (true) {
-        try {
-          await AuthCleanup.finishGuardian(this.request.store, this.request.workspace);
-          process.exit(2);
-        } catch {
-          await delay(250);
-        }
-      }
+    this.deadline = setTimeout(() => void this.stop(2), this.request.timeoutMs + 25_000);
+    this.parentPoll = setInterval(() => {
+      if (OwnedProcessGroup.parentPid() !== this.launcher) void this.stop(2);
+    }, 25);
+    if (OwnedProcessGroup.parentPid() !== this.launcher) {
+      await this.stop(2);
+      return;
     }
+    child.stdin!.end(JSON.stringify(this.request));
   }
 
   private async stop(code: number): Promise<void> {
-    if (this.result === undefined) this.result = code;
-    else if (code !== 0) this.result = 2;
+    if (code !== 0) this.result = 2;
     if (this.stopping) return;
+
     this.stopping = true;
     if (this.parentPoll) clearInterval(this.parentPoll);
     if (this.deadline) clearTimeout(this.deadline);
+
     let reported = false;
-    while (true) {
-      try {
-        if (!this.separated || this.libc.processGroupId() === process.pid)
-          throw new AuthError('cleanup-required');
+    const retry = async (work: () => Promise<void>) => {
+      while (true) {
         try {
-          process.kill(-process.pid, 'SIGKILL');
-        } catch (error) {
-          if (!['ESRCH', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? ''))
-            throw error;
-        }
-        await ProcessManager.waitForGroupExit(process.pid);
-        await this.workerClosed;
-        if (this.result === 0) {
-          try {
-            this.events!.finalState();
-          } catch {
-            this.result = 2;
+          await work();
+          return;
+        } catch {
+          if (!reported) {
+            this.report({ type: 'error', code: 'cleanup-required' });
+            reported = true;
           }
+          await delay(250);
         }
-        await AuthCleanup.finishGuardian(this.request.store, this.request.workspace);
-        process.exit(this.result ?? 2);
-      } catch {
-        if (!reported) {
-          process.stdout.write(serializeAuthEvent({ type: 'error', code: 'cleanup-required' }));
-          reported = true;
-        }
-        await delay(250);
       }
+    };
+
+    if (this.stopWorker) await retry(this.stopWorker);
+    await this.workerClosed;
+    const event = await this.verifiedResult();
+
+    const { store, workspace } = this.request;
+    await retry(() =>
+      this.claimed
+        ? AuthCleanup.finishGuardian(store, workspace)
+        : AuthCleanup.finishUnclaimed(store, workspace),
+    );
+
+    if (!reported) this.report(event);
+    process.exit(!reported && event.type === 'state' ? 0 : 2);
+  }
+
+  private async verifiedResult(): Promise<AuthEvent> {
+    try {
+      if (this.result !== 0 || !this.events)
+        throw this.events?.failure ?? new AuthError('operation-failed');
+      const state = this.events.finalState();
+      const { operation, store, workspace } = this.request;
+      if (operation === 'login' && state === 'signed-in') {
+        await AuthCleanup.verifyGuardianWorkspace(store, workspace);
+        const managed = new AuthStore(store);
+        await managed.publishLogin(stagedLoginStore(store, workspace));
+        if ((await managed.inspectCredentials()) !== 'signed-in')
+          throw new AuthError('login-required');
+      }
+      return { type: 'state', state };
+    } catch (error) {
+      return { type: 'error', code: error instanceof AuthError ? error.code : 'operation-failed' };
+    }
+  }
+
+  private report(event: AuthEvent): void {
+    try {
+      writeSync(1, serializeAuthEvent(event));
+    } catch {
+      // The launcher may have exited. Cleanup still owns the lease and must finish.
     }
   }
 }
 
-async function waitForAnchor(child: ChildProcess): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => finish(new AuthError('cleanup-required')), 20_000);
-    let text = '';
-    const finish = (error?: Error) => {
-      clearTimeout(timer);
-      if (error) reject(error);
-      else resolve();
-    };
-    child.once('error', () => finish(new AuthError('cleanup-required')));
-    child.once('exit', () => finish(new AuthError('cleanup-required')));
-    child.stdout!.on('data', (chunk: Buffer) => {
-      text += chunk.toString();
-      if (text === 'ready\n') finish();
-      else if (text.length > 6) finish(new AuthError('cleanup-required'));
-    });
-  });
-}
-
 if (import.meta.main) {
-  process.stdout.on('error', () => {});
-  if (process.argv[2] === '--anchor') {
-    Libc.load().moveToGroup(0);
-    process.stdout.write('ready\n');
-    setTimeout(() => process.exit(0), 20_000);
-  } else {
-    const request = authRequestSchema.parse(JSON.parse(process.argv[2]!));
-    const launcher = Number(process.argv[3]);
-    if (!Number.isSafeInteger(launcher) || launcher <= 1) throw new AuthError('operation-failed');
-    await new GuardianRun(request, launcher).start();
-  }
+  const request = authRequestSchema.parse(JSON.parse(process.argv[2]!));
+  const launcher = Number(process.argv[3]);
+  if (!Number.isSafeInteger(launcher) || launcher <= 1) throw new AuthError('operation-failed');
+  await new GuardianRun(request, launcher).start();
 }
