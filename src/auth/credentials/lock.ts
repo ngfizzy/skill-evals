@@ -45,7 +45,7 @@ export class CredentialLock implements CredentialLease {
           );
 
           CredentialLock.throwIfInterrupted(signal);
-          if (!(await AuthCleanup.pending(store))) {
+          if (await AuthCleanup.clearCompleted(store)) {
             CredentialLock.throwIfInterrupted(signal);
             return new CredentialLock(file);
           }
@@ -89,9 +89,9 @@ export class CredentialLock implements CredentialLease {
     };
   }
 
-  // Once the launcher has exited, a fresh exclusive lease proves nobody inherited a
-  // live descriptor. Only the matching pre-worker record can be recovered this way.
-  static async recoverUnclaimed(store: AuthStoreLocation, workspace: string): Promise<void> {
+  // A new lease proves nobody holds the inherited descriptor. An active guardian
+  // record still blocks recovery because its workers may have survived.
+  static async recoverWorkspace(store: AuthStoreLocation, workspace: string): Promise<void> {
     try {
       await new AuthStore(store).assertValid();
 
@@ -99,7 +99,7 @@ export class CredentialLock implements CredentialLease {
       const file = await CredentialLock.openLockFile(path);
       try {
         await CredentialLock.waitForLock(file, path, 250);
-        await AuthCleanup.finishUnclaimed(store, workspace);
+        await AuthCleanup.recoverWorkspace(store, workspace);
       } finally {
         await file.close();
       }

@@ -84,7 +84,9 @@ guardian's live PID reserves the worker group's numeric ID, so it cannot signal 
 an exited launcher's PID.
 
 On completion, timeout or parent loss, the guardian terminates and confirms exit of its worker
-group, removes the matching workspace and cleanup record, then exits to release its descriptor.
+group, removes the matching workspace, records the verified removal, and unlinks the record. It then
+exits to release its descriptor. If record unlink fails, a later lock holder can remove that
+completed record after checking that the workspace is still absent.
 
 Linux supervisors adopt and reap orphaned descendants. On macOS ARM64, the supervisor queries kernel
 process status and confirms that any remaining group members have exited and are awaiting reaping.
@@ -95,11 +97,11 @@ group shutdown and reports success only after cleanup completes.
 Context cleanup removes and verifies the auth link before deleting other temporary files. If cleanup
 fails, the guardian keeps the actual OS lock and retries cleanup; it never expires or steals
 ownership. The caller gets `cleanup-required` after a bounded cleanup wait. Restoring access to the
-original workspace lets cleanup finish. If the guardian itself is killed, its record still blocks
-store reuse. Explicit recovery requires confirming that writers have stopped and removing the
-recorded temporary workspace before removing that operation's record. Never remove a record or stop
-a guardian merely to bypass a surviving writer. The record supplements `flock` rather than replacing
-it.
+original workspace lets cleanup finish. If the guardian is killed before recording verified removal,
+its record still blocks store reuse. Explicit recovery requires confirming that writers have stopped
+and removing the recorded temporary workspace before removing that operation's record. Never remove
+a record or stop a guardian merely to bypass a surviving writer. The record supplements `flock`
+rather than replacing it.
 
 This lock binding requires exactly Bun `1.4.4`. Audited targets are macOS ARM64 and Linux ARM64/x64
 with glibc or musl, on allowlisted local filesystems. Bun FFI is experimental; runtime upgrades

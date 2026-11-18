@@ -6,7 +6,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { AuthCleanup } from '../src/auth/credentials/cleanup.ts';
 import { CredentialLock } from '../src/auth/credentials/lock.ts';
 import { packagedAuthRuntime } from '../src/auth/runtime/packaged-codex.ts';
 import { AuthStore } from '../src/auth/credentials/store.ts';
@@ -55,7 +54,7 @@ async function audit(root: string): Promise<void> {
     await assert.rejects(CredentialLock.acquire(store, undefined, 2000), {
       code: 'cleanup-required',
     });
-    await AuthCleanup.finish(store, workspace);
+    await CredentialLock.recoverWorkspace(store, workspace);
 
     const recovered = await CredentialLock.acquire(store, undefined, 2000);
     await recovered.release();

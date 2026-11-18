@@ -80,8 +80,8 @@ export class AuthCleanup {
         const owned = await AuthCleanup.readRecord(store);
         if (!owned || owned.record.workspace !== workspace) break;
 
-        if (owned.record.phase === 'launcher')
-          return await AuthCleanup.finishOwnedCleanup(store, owned);
+        if (owned.record.phase === 'launcher' || owned.record.phase === 'removed')
+          throw new AuthError('cleanup-required');
 
         if (performance.now() - started >= 3000) throw new AuthError('cleanup-required');
         await delay(10);
@@ -93,31 +93,17 @@ export class AuthCleanup {
     }
   }
 
-  // Run after worker shutdown, under the inherited lease. Keep the verified deletion
-  // in memory so a failed record unlink can be retried against the same inode.
+  // Run after worker shutdown, under the inherited lease.
   static guardianCleanup(
     store: AuthStoreLocation,
     workspace: string,
     claimed: boolean,
   ): () => Promise<void> {
-    let removedWorkspace: OwnedCleanup | undefined;
-
-    return async () => {
-      try {
-        if (!removedWorkspace) {
-          const owned = claimed
-            ? await AuthCleanup.guardianRecord(store, workspace)
-            : await AuthCleanup.unclaimedRecord(store, workspace);
-
-          await AuthCleanup.deleteWorkspace(store, owned);
-          removedWorkspace = owned;
-        }
-
-        await AuthCleanup.deleteRecord(store, removedWorkspace);
-      } catch {
-        throw new AuthError('cleanup-required');
-      }
-    };
+    return AuthCleanup.workspaceCleanup(store, () =>
+      claimed
+        ? AuthCleanup.guardianRecord(store, workspace)
+        : AuthCleanup.unclaimedRecord(store, workspace),
+    );
   }
 
   static async verifyGuardianWorkspace(store: AuthStoreLocation, workspace: string): Promise<void> {
@@ -141,10 +127,33 @@ export class AuthCleanup {
 
   // Only a caller holding the lease may recover an unclaimed record.
   static async finishUnclaimed(store: AuthStoreLocation, workspace: string): Promise<void> {
-    await AuthCleanup.finishOwnedCleanup(
-      store,
-      await AuthCleanup.unclaimedRecord(store, workspace),
-    );
+    await AuthCleanup.workspaceCleanup(store, () =>
+      AuthCleanup.unclaimedRecord(store, workspace),
+    )();
+  }
+
+  // The parent may recover its own workspace after the launcher exits and the lease is free.
+  static async recoverWorkspace(store: AuthStoreLocation, workspace: string): Promise<void> {
+    const owned = await AuthCleanup.readRecord(store);
+    if (!owned || owned.record.workspace !== workspace) {
+      if (await pathExists(workspace)) throw new AuthError('cleanup-required');
+      return;
+    }
+
+    if (owned.record.phase === 'guardian') throw new AuthError('cleanup-required');
+
+    await AuthCleanup.workspaceCleanup(store, async () => owned)();
+  }
+
+  // A new lease holder can remove a completed record after checking that the workspace is gone.
+  static async clearCompleted(store: AuthStoreLocation): Promise<boolean> {
+    const owned = await AuthCleanup.readRecord(store);
+    if (!owned) return true;
+
+    if (owned.record.phase !== 'removed') return false;
+
+    await AuthCleanup.deleteRecord(store, owned);
+    return true;
   }
 
   private static async unclaimedRecord(
@@ -162,19 +171,23 @@ export class AuthCleanup {
     store: AuthStoreLocation,
     owned: OwnedCleanup,
     record: CleanupRecord,
-  ): Promise<void> {
+  ): Promise<OwnedCleanup> {
     const path = AuthCleanup.path(store);
     const temporary = path + '.' + randomUUID();
     const file = await open(temporary, 'wx', 0o600);
     try {
+      let identity: Stats;
       try {
         await file.writeFile(JSON.stringify(record));
+        await file.sync();
+        identity = await file.stat();
       } finally {
         await file.close();
       }
 
       if (!isSameFile(owned.identity, await lstat(path))) throw new AuthError('cleanup-required');
       await rename(temporary, path);
+      return { identity, record };
     } finally {
       await unlink(temporary).catch((error: NodeJS.ErrnoException) => {
         if (error.code !== 'ENOENT') throw error;
@@ -182,16 +195,37 @@ export class AuthCleanup {
     }
   }
 
-  private static async finishOwnedCleanup(
+  private static workspaceCleanup(
     store: AuthStoreLocation,
-    owned: OwnedCleanup,
-  ): Promise<void> {
-    try {
-      await AuthCleanup.deleteWorkspace(store, owned);
-      await AuthCleanup.deleteRecord(store, owned);
-    } catch {
-      throw new AuthError('cleanup-required');
-    }
+    load: () => Promise<OwnedCleanup>,
+  ): () => Promise<void> {
+    let removed: OwnedCleanup | undefined;
+
+    return async () => {
+      try {
+        if (!removed) {
+          const owned = await load();
+          if (owned.record.phase !== 'removed') await AuthCleanup.deleteWorkspace(store, owned);
+          removed = owned;
+        }
+
+        // Publish only after deletion was verified. An older phase plus a missing workspace
+        // is still ambiguous, so recovery must leave that record in place.
+        if (removed.record.phase !== 'removed') {
+          const { workspace, dev, ino } = removed.record;
+          removed = await AuthCleanup.replaceRecord(store, removed, {
+            workspace,
+            dev,
+            ino,
+            phase: 'removed',
+          });
+        }
+
+        await AuthCleanup.deleteRecord(store, removed);
+      } catch {
+        throw new AuthError('cleanup-required');
+      }
+    };
   }
 
   private static async deleteWorkspace(
@@ -206,12 +240,17 @@ export class AuthCleanup {
   }
 
   private static async deleteRecord(store: AuthStoreLocation, owned: OwnedCleanup): Promise<void> {
-    const path = AuthCleanup.path(store);
-    if (await pathExists(owned.record.workspace)) throw new AuthError('cleanup-required');
+    if (owned.record.phase !== 'removed' || (await pathExists(owned.record.workspace)))
+      throw new AuthError('cleanup-required');
 
+    const path = AuthCleanup.path(store);
     if (!isSameFile(owned.identity, await lstat(path))) throw new AuthError('cleanup-required');
 
-    await unlink(path);
+    try {
+      await unlink(path);
+    } catch {
+      throw new AuthError('cleanup-required');
+    }
   }
 
   private static async verifyWorkspace(
@@ -262,6 +301,7 @@ const cleanupRecordSchema = z.discriminatedUnion('phase', [
   z
     .object({ ...recordIdentity, phase: z.literal('guardian'), guardian: z.number().int().min(2) })
     .strict(),
+  z.object({ ...recordIdentity, phase: z.literal('removed') }).strict(),
 ]);
 type CleanupRecord = z.infer<typeof cleanupRecordSchema>;
 

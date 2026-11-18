@@ -177,12 +177,10 @@ describe('cleanup ownership', () => {
       await AuthCleanup.prepareGuardian(auth.store, workspace);
 
       const finish = AuthCleanup.guardianCleanup(auth.store, workspace, false);
-      const unlinkRecord = spyOn(fs, 'unlink').mockRejectedValueOnce(
-        Object.assign(new Error('temporary record unlink failure'), { code: 'EACCES' }),
-      );
+      const unlinkRecord = failRecordUnlink(record);
       try {
         await assert.rejects(finish(), authError('cleanup-required'));
-        assert.deepEqual(unlinkRecord.mock.calls, [[record]]);
+        assert.deepEqual(unlinkRecord.mock.calls.at(-1), [record]);
       } finally {
         unlinkRecord.mockRestore();
       }
@@ -202,6 +200,45 @@ describe('cleanup ownership', () => {
     }
 
     await auth.assertLockAvailable();
+  });
+
+  test('a fresh lease clears a verified removal left by a previous holder', async (t) => {
+    const auth = await AuthHarness.create(t);
+    const workspace = join(auth.root, 'operation');
+    const record = join(auth.store.directory, '.auth-context.json');
+    await mkdir(workspace, { mode: 0o700 });
+
+    const lease = await CredentialLock.acquire(auth.store);
+    try {
+      await AuthCleanup.begin(auth.store, workspace);
+      await AuthCleanup.prepareGuardian(auth.store, workspace);
+
+      const unlinkRecord = failRecordUnlink(record);
+      try {
+        await assert.rejects(
+          AuthCleanup.finishUnclaimed(auth.store, workspace),
+          authError('cleanup-required'),
+        );
+      } finally {
+        unlinkRecord.mockRestore();
+      }
+    } finally {
+      await lease.release();
+    }
+
+    assert.equal(JSON.parse(await readFile(record, 'utf8')).phase, 'removed');
+    await assert.rejects(lstat(workspace), { code: 'ENOENT' });
+
+    await mkdir(workspace, { mode: 0o700 });
+    await assert.rejects(
+      CredentialLock.acquire(auth.store, undefined, 100),
+      authError('cleanup-required'),
+    );
+    assert.ok((await lstat(workspace)).isDirectory());
+    await rm(workspace, { recursive: true });
+
+    assert.equal(await (await auth.service()).execute('status'), 'signed-out');
+    await assert.rejects(lstat(record), { code: 'ENOENT' });
   });
 
   test('a failed guardian spawn removes the starting record while the launcher owns the lease', async (t) => {
@@ -249,7 +286,7 @@ describe('cleanup ownership', () => {
       await AuthCleanup.begin(auth.store, workspace);
       await AuthCleanup.prepareGuardian(auth.store, workspace);
       await assert.rejects(
-        CredentialLock.recoverUnclaimed(auth.store, workspace),
+        CredentialLock.recoverWorkspace(auth.store, workspace),
         authError('cleanup-required'),
       );
     } finally {
@@ -259,7 +296,7 @@ describe('cleanup ownership', () => {
     const service = await auth.service();
     const status = service.execute('status');
     await Bun.sleep(200);
-    await CredentialLock.recoverUnclaimed(auth.store, workspace);
+    await CredentialLock.recoverWorkspace(auth.store, workspace);
 
     assert.equal(await status, 'signed-out');
     assert.equal(await AuthCleanup.pending(auth.store), false);
@@ -275,10 +312,17 @@ describe('cleanup ownership', () => {
     const lease = await CredentialLock.acquire(auth.store);
     const context = await createAuthContext(auth.store, workspace);
     await rename(workspace, moved);
-    await mkdir(workspace, { mode: 0o700 });
     await lease.release();
 
-    await assert.rejects(AuthCleanup.finish(auth.store, workspace), authError('cleanup-required'));
+    await assert.rejects(
+      CredentialLock.recoverWorkspace(auth.store, workspace),
+      authError('cleanup-required'),
+    );
+    await mkdir(workspace, { mode: 0o700 });
+    await assert.rejects(
+      CredentialLock.recoverWorkspace(auth.store, workspace),
+      authError('cleanup-required'),
+    );
     const link = join(moved, context.directory.slice(workspace.length), 'codex', 'auth.json');
     assert.equal(await readFile(link, 'utf8'), JSON.stringify(SYNTHETIC_CREDENTIALS));
     await assert.rejects(
@@ -288,7 +332,7 @@ describe('cleanup ownership', () => {
 
     await rm(workspace, { recursive: true });
     await rename(moved, workspace);
-    await AuthCleanup.finish(auth.store, workspace);
+    await CredentialLock.recoverWorkspace(auth.store, workspace);
     await auth.assertLockAvailable();
     assert.equal(await auth.authStore.inspectCredentials(), 'signed-in');
   });
@@ -315,7 +359,7 @@ describe('cleanup ownership', () => {
       authError('cleanup-required'),
     );
 
-    await AuthCleanup.finish(auth.store, workspace);
+    await CredentialLock.recoverWorkspace(auth.store, workspace);
     await auth.assertLockAvailable();
     assert.equal(await auth.authStore.inspectCredentials(), 'signed-in');
   });
@@ -329,10 +373,19 @@ describe('cleanup ownership', () => {
     const waiting = CredentialLock.acquire(auth.store, controller.signal, 1000);
     setTimeout(() => controller.abort(), 50);
     await assert.rejects(waiting, authError('interrupted'));
-    await AuthCleanup.finish(auth.store, workspace);
+    await CredentialLock.recoverWorkspace(auth.store, workspace);
     await auth.assertLockAvailable();
   });
 });
+
+function failRecordUnlink(record: string) {
+  const unlink = fs.unlink;
+  return spyOn(fs, 'unlink').mockImplementation(async (path) => {
+    if (path === record)
+      throw Object.assign(new Error('temporary record unlink failure'), { code: 'EACCES' });
+    await unlink(path);
+  });
+}
 
 describe('CredentialLock', () => {
   test('times out while another process holds the lock', async (t) => {

@@ -90,8 +90,7 @@ export class AuthService {
       try {
         await AuthCleanup.finish(store.location, workspace);
       } catch {
-        // The launcher can die just after writing 'starting', before it spawns the guardian.
-        await CredentialLock.recoverUnclaimed(store.location, workspace);
+        await CredentialLock.recoverWorkspace(store.location, workspace);
       }
     }
   }
