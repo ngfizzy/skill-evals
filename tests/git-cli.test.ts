@@ -12,7 +12,7 @@ import { gitServer } from './helpers/git-server.ts';
 const cli = resolve(process.env.SKILL_EVALS_TEST_ENTRY ?? 'src/cli.ts');
 const fakeCodex = resolve('tests/helpers/fake-codex.ts');
 
-test('CLI loads named cases across mixed roots, records provenance and replays offline', async (t) => {
+test('mixed Git roots and offline replay preserve provenance', { timeout: 15_000 }, async (t) => {
   const server = await gitServer(t);
   const repo = await server.repository();
   const dependency = await server.repository('deps');

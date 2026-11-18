@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { ProcessManager, type ProcessOptions } from '../src/process/index.ts';
+import { ProcessManager, ProcessTeardownError, type ProcessOptions } from '../src/process/index.ts';
 
 import { temporary } from './helpers/fixture.ts';
 
@@ -78,6 +78,38 @@ test('one manager keeps concurrent output and cancellation independent', async (
 
   const [, output] = await Promise.all([interrupted, successful]);
   assert.equal(output, 'survived');
+});
+
+test('rejects when a detached child leaves output open after the supervisor exits', async (t) => {
+  const root = await temporary(t);
+  const program = `
+    const { spawn } = require('node:child_process');
+    const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 12000)'], {
+      detached: true,
+      stdio: 'inherit',
+    });
+    child.once('spawn', () => {
+      console.log(child.pid);
+      process.exit(0);
+    });
+  `;
+  let pid = 0;
+  t.after(() => {
+    if (Number.isSafeInteger(pid) && pid > 1) process.kill(pid, 'SIGKILL');
+  });
+
+  await assert.rejects(
+    nodeRun(root, program, {
+      onStdout: (chunk) => {
+        pid = Number(chunk.toString().trim());
+      },
+    }),
+    (error) =>
+      error instanceof ProcessTeardownError &&
+      /output remained open after exit/i.test(error.message),
+  );
+
+  assert.ok(Number.isSafeInteger(pid) && pid > 1);
 });
 
 for (const mode of ['timeout', 'leader-exit', 'abort'])

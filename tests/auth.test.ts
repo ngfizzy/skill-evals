@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import * as childProcess from 'node:child_process';
 import { once } from 'node:events';
+import * as fs from 'node:fs/promises';
 import {
   chmod,
   link,
@@ -164,6 +165,45 @@ describe('createAuthContext', () => {
 });
 
 describe('cleanup ownership', () => {
+  test('guardian retries record removal after it has verified workspace deletion', async (t) => {
+    const auth = await AuthHarness.create(t);
+    const workspace = join(auth.root, 'operation');
+    const record = join(auth.store.directory, '.auth-context.json');
+    await mkdir(workspace, { mode: 0o700 });
+
+    const lease = await CredentialLock.acquire(auth.store);
+    try {
+      await AuthCleanup.begin(auth.store, workspace);
+      await AuthCleanup.prepareGuardian(auth.store, workspace);
+
+      const finish = AuthCleanup.guardianCleanup(auth.store, workspace, false);
+      const unlinkRecord = spyOn(fs, 'unlink').mockRejectedValueOnce(
+        Object.assign(new Error('temporary record unlink failure'), { code: 'EACCES' }),
+      );
+      try {
+        await assert.rejects(finish(), authError('cleanup-required'));
+        assert.deepEqual(unlinkRecord.mock.calls, [[record]]);
+      } finally {
+        unlinkRecord.mockRestore();
+      }
+
+      await assert.rejects(lstat(workspace), { code: 'ENOENT' });
+      assert.equal(await AuthCleanup.pending(auth.store), true);
+
+      await mkdir(workspace, { mode: 0o700 });
+      await assert.rejects(finish(), authError('cleanup-required'));
+      assert.ok((await lstat(workspace)).isDirectory());
+      await rm(workspace, { recursive: true });
+
+      await finish();
+      assert.equal(await AuthCleanup.pending(auth.store), false);
+    } finally {
+      await lease.release();
+    }
+
+    await auth.assertLockAvailable();
+  });
+
   test('a failed guardian spawn removes the starting record while the launcher owns the lease', async (t) => {
     const auth = await AuthHarness.create(t);
     const workspace = join(auth.root, 'failed spawn');

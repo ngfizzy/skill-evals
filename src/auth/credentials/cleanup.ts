@@ -81,7 +81,7 @@ export class AuthCleanup {
         if (!owned || owned.record.workspace !== workspace) break;
 
         if (owned.record.phase === 'launcher')
-          return await AuthCleanup.removeWorkspace(store, owned);
+          return await AuthCleanup.finishOwnedCleanup(store, owned);
 
         if (performance.now() - started >= 3000) throw new AuthError('cleanup-required');
         await delay(10);
@@ -93,9 +93,31 @@ export class AuthCleanup {
     }
   }
 
-  // Call after the launcher's process group is confirmed gone, while fd 3 still owns the lock.
-  static async finishGuardian(store: AuthStoreLocation, workspace: string): Promise<void> {
-    await AuthCleanup.removeWorkspace(store, await AuthCleanup.guardianRecord(store, workspace));
+  // Run after worker shutdown, under the inherited lease. Keep the verified deletion
+  // in memory so a failed record unlink can be retried against the same inode.
+  static guardianCleanup(
+    store: AuthStoreLocation,
+    workspace: string,
+    claimed: boolean,
+  ): () => Promise<void> {
+    let removedWorkspace: OwnedCleanup | undefined;
+
+    return async () => {
+      try {
+        if (!removedWorkspace) {
+          const owned = claimed
+            ? await AuthCleanup.guardianRecord(store, workspace)
+            : await AuthCleanup.unclaimedRecord(store, workspace);
+
+          await AuthCleanup.deleteWorkspace(store, owned);
+          removedWorkspace = owned;
+        }
+
+        await AuthCleanup.deleteRecord(store, removedWorkspace);
+      } catch {
+        throw new AuthError('cleanup-required');
+      }
+    };
   }
 
   static async verifyGuardianWorkspace(store: AuthStoreLocation, workspace: string): Promise<void> {
@@ -119,10 +141,21 @@ export class AuthCleanup {
 
   // Only a caller holding the lease may recover an unclaimed record.
   static async finishUnclaimed(store: AuthStoreLocation, workspace: string): Promise<void> {
+    await AuthCleanup.finishOwnedCleanup(
+      store,
+      await AuthCleanup.unclaimedRecord(store, workspace),
+    );
+  }
+
+  private static async unclaimedRecord(
+    store: AuthStoreLocation,
+    workspace: string,
+  ): Promise<OwnedCleanup> {
     const owned = await AuthCleanup.readRecord(store);
     if (!owned || owned.record.workspace !== workspace || owned.record.phase !== 'starting')
       throw new AuthError('cleanup-required');
-    await AuthCleanup.removeWorkspace(store, owned);
+
+    return owned;
   }
 
   private static async replaceRecord(
@@ -149,23 +182,36 @@ export class AuthCleanup {
     }
   }
 
-  private static async removeWorkspace(
+  private static async finishOwnedCleanup(
     store: AuthStoreLocation,
     owned: OwnedCleanup,
   ): Promise<void> {
     try {
-      const { workspace } = owned.record;
-      await AuthCleanup.verifyWorkspace(store, owned);
-
-      await rm(workspace, { recursive: true, force: true });
-      if (await pathExists(workspace)) throw new AuthError('cleanup-required');
-
-      if (!isSameFile(owned.identity, await lstat(AuthCleanup.path(store))))
-        throw new AuthError('cleanup-required');
-      await unlink(AuthCleanup.path(store));
+      await AuthCleanup.deleteWorkspace(store, owned);
+      await AuthCleanup.deleteRecord(store, owned);
     } catch {
       throw new AuthError('cleanup-required');
     }
+  }
+
+  private static async deleteWorkspace(
+    store: AuthStoreLocation,
+    owned: OwnedCleanup,
+  ): Promise<void> {
+    const { workspace } = owned.record;
+    await AuthCleanup.verifyWorkspace(store, owned);
+
+    await rm(workspace, { recursive: true, force: true });
+    if (await pathExists(workspace)) throw new AuthError('cleanup-required');
+  }
+
+  private static async deleteRecord(store: AuthStoreLocation, owned: OwnedCleanup): Promise<void> {
+    const path = AuthCleanup.path(store);
+    if (await pathExists(owned.record.workspace)) throw new AuthError('cleanup-required');
+
+    if (!isSameFile(owned.identity, await lstat(path))) throw new AuthError('cleanup-required');
+
+    await unlink(path);
   }
 
   private static async verifyWorkspace(

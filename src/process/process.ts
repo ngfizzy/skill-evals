@@ -9,6 +9,7 @@ export const MAX_OUTPUT = 2_097_152;
 export class ProcessTimeoutError extends Error {}
 
 const DIAGNOSTIC_TAIL_BYTES = 3000;
+const EXIT_DRAIN_TIMEOUT_MS = 1_000;
 
 type OutputStream = 'stdout' | 'stderr';
 
@@ -82,15 +83,38 @@ class ProcessRun {
       if ((error as NodeJS.ErrnoException).code !== 'EPIPE') this.stop(error);
     });
 
-    child.on('close', (code, signal) => {
+    let drainTimer: ReturnType<typeof setTimeout> | undefined;
+    let settled = false;
+    const settle = (readOutput: () => string) => {
+      if (settled) return;
+      settled = true;
+
       clearTimeout(timer);
+      clearTimeout(drainTimer);
       options.signal?.removeEventListener('abort', abort);
+
       try {
-        resolve(this.finish(code, signal));
+        resolve(readOutput());
       } catch (error) {
         reject(error instanceof Error ? error : new ProcessTeardownError('Process failed'));
       }
+    };
+
+    child.once('exit', () => {
+      if (settled) return;
+
+      // The supervisor has exited, but a descendant can still hold an inherited stream.
+      drainTimer = setTimeout(() => {
+        settle(() => {
+          child.stdout!.destroy();
+          child.stderr!.destroy();
+          result?.destroy();
+          throw new ProcessTeardownError('Process output remained open after exit');
+        });
+      }, EXIT_DRAIN_TIMEOUT_MS);
     });
+
+    child.once('close', (code, signal) => settle(() => this.finish(code, signal)));
 
     child.stdin!.end(options.input);
   }

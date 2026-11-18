@@ -110,12 +110,8 @@ class GuardedAuthRun {
     }
 
     const event = await this.verifiedResult();
-    await retryTeardown(
-      () =>
-        this.claimed
-          ? AuthCleanup.finishGuardian(store, workspace)
-          : AuthCleanup.finishUnclaimed(store, workspace),
-      () => this.reportRecovery(),
+    await retryTeardown(AuthCleanup.guardianCleanup(store, workspace, this.claimed), () =>
+      this.reportRecovery(),
     );
 
     if (!this.recoveryReported) this.report(event);
