@@ -6,18 +6,19 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import { z } from 'zod';
 
-import { isSameFile, readBounded } from '../utils/index.ts';
+import { isSameFile, readBounded } from '../../utils/index.ts';
+import { AuthError } from '../contracts/errors.ts';
+import type { AuthStoreLocation } from '../contracts/types.ts';
 
 import { Libc } from './libc.ts';
-import { AuthError } from './errors.ts';
 import { AuthStore } from './store.ts';
-import type { AuthStoreLocation } from './types.ts';
 
 // The guardian holds flock through cleanup. This record also blocks reuse if it is killed or
 // cleanup cannot be verified. It never expires and is never used to steal a surviving lock.
 export class AuthCleanup {
   static async begin(store: AuthStoreLocation, workspace: string): Promise<void> {
     const existing = await AuthCleanup.readRecord(store);
+
     if (existing) {
       if (
         existing.record.phase === 'guardian' &&
@@ -28,8 +29,10 @@ export class AuthCleanup {
         return;
       throw new AuthError('cleanup-required');
     }
+
     const identity = await lstat(workspace);
     AuthStore.assertPrivateDirectory(identity);
+
     await writeFile(
       AuthCleanup.path(store),
       JSON.stringify({ workspace, dev: identity.dev, ino: identity.ino, phase: 'launcher' }),
@@ -51,6 +54,7 @@ export class AuthCleanup {
     const owned = await AuthCleanup.readRecord(store);
     if (!owned || owned.record.workspace !== workspace || owned.record.phase !== 'launcher')
       throw new AuthError('cleanup-required');
+
     await AuthCleanup.replaceRecord(store, owned, { ...owned.record, phase: 'starting' });
   }
 
@@ -58,6 +62,7 @@ export class AuthCleanup {
     const owned = await AuthCleanup.readRecord(store);
     if (!owned || owned.record.workspace !== workspace || owned.record.phase !== 'starting')
       throw new AuthError('cleanup-required');
+
     await AuthCleanup.replaceRecord(store, owned, {
       ...owned.record,
       phase: 'guardian',
@@ -70,14 +75,18 @@ export class AuthCleanup {
   static async finish(store: AuthStoreLocation, workspace: string): Promise<void> {
     try {
       const started = performance.now();
+
       while (true) {
         const owned = await AuthCleanup.readRecord(store);
         if (!owned || owned.record.workspace !== workspace) break;
+
         if (owned.record.phase === 'launcher')
           return await AuthCleanup.removeWorkspace(store, owned);
+
         if (performance.now() - started >= 3000) throw new AuthError('cleanup-required');
         await delay(10);
       }
+
       await rm(workspace, { recursive: true, force: true });
     } catch {
       throw new AuthError('cleanup-required');
@@ -130,6 +139,7 @@ export class AuthCleanup {
       } finally {
         await file.close();
       }
+
       if (!isSameFile(owned.identity, await lstat(path))) throw new AuthError('cleanup-required');
       await rename(temporary, path);
     } finally {
@@ -146,8 +156,10 @@ export class AuthCleanup {
     try {
       const { workspace } = owned.record;
       await AuthCleanup.verifyWorkspace(store, owned);
+
       await rm(workspace, { recursive: true, force: true });
       if (await pathExists(workspace)) throw new AuthError('cleanup-required');
+
       if (!isSameFile(owned.identity, await lstat(AuthCleanup.path(store))))
         throw new AuthError('cleanup-required');
       await unlink(AuthCleanup.path(store));
@@ -174,10 +186,13 @@ export class AuthCleanup {
       const path = AuthCleanup.path(store);
       const identity = await lstat(path);
       AuthStore.assertPrivateFile(identity);
+
       const record = cleanupRecordSchema.parse(JSON.parse(await readBounded(path, 4096)));
+
       const current = await lstat(path);
       AuthStore.assertPrivateFile(current);
       if (!isSameFile(identity, current)) throw new AuthError('cleanup-required');
+
       return { identity, record };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;

@@ -1,9 +1,11 @@
 // Launcher process entrypoint: reads one request on stdin and writes newline-delimited events on
 // stdout. AuthService runs it in a separate process so native Codex inherits only the lease.
-import { AuthError } from './errors.ts';
+
+import { AuthError } from '../contracts/errors.ts';
+import { readAuthRequest, serializeAuthEvent } from '../contracts/protocol.ts';
+import type { AuthEvent } from '../contracts/types.ts';
+
 import { AuthLauncherJob } from './operations.ts';
-import { readAuthRequest, serializeAuthEvent } from './protocol.ts';
-import type { AuthEvent } from './types.ts';
 
 if (import.meta.main) {
   const emit = (event: AuthEvent) => process.stdout.write(serializeAuthEvent(event));

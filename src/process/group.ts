@@ -9,7 +9,7 @@ const ANCHOR_MS = 20_000;
 const TEARDOWN_MS = 2_000;
 const POLL_MS = 10;
 
-interface ChildExit {
+export interface ChildExit {
   code: number | null;
   signal: NodeJS.Signals | null;
   error?: Error;
@@ -18,6 +18,7 @@ interface ChildExit {
 interface PreparedChild<Child extends ChildProcess> {
   child: Child;
   exited: Promise<ChildExit>;
+  closed: Promise<void>;
 }
 
 // The supervisor stays alive outside the worker group. Since its own PID names the
@@ -41,13 +42,18 @@ export class OwnedProcessGroup {
     this.platform.children.prepare();
     const controlGroup = this.platform.currentGroup();
     this.platform.moveTo(0);
+
     const child = spawnWorker();
     const exited = observeExit(child);
+    const closed = new Promise<void>((resolve) => child.once('close', () => resolve()));
+
     try {
       await this.separateFromWorker(controlGroup, env);
+
       if (!child.pid || child.exitCode !== null || child.signalCode !== null)
         throw new ProcessTeardownError('Worker exited during startup');
-      return { child, exited };
+
+      return { child, exited, closed };
     } catch (error) {
       // The worker waits for a request before it can run the workload.
       child.kill('SIGKILL');
@@ -67,6 +73,7 @@ export class OwnedProcessGroup {
     await within(exited, TEARDOWN_MS, 'Worker did not exit after termination');
 
     let previousZombies: string | undefined;
+
     while (performance.now() - started < TEARDOWN_MS) {
       this.platform.children.reap(this.id);
       if (!signalGroup(this.id, 0)) return;
@@ -78,6 +85,7 @@ export class OwnedProcessGroup {
       signalGroup(this.id, 'SIGKILL');
       await delay(POLL_MS);
     }
+
     throw new ProcessTeardownError('Process group remained after termination');
   }
 
@@ -88,15 +96,18 @@ export class OwnedProcessGroup {
       this.separated = true;
       return;
     }
+
     const anchor = spawn(
       process.execPath,
       ['--no-env-file', '--no-install', fileURLToPath(import.meta.url), '--anchor'],
       { env, stdio: ['ignore', 'pipe', 'ignore'] },
     );
     const exited = observeExit(anchor);
+
     try {
       await within(anchorReady(anchor, exited), ANCHOR_MS, 'Process-group anchor timed out');
       if (!anchor.pid) throw new ProcessTeardownError('Missing process-group anchor');
+
       this.platform.moveTo(anchor.pid);
       this.separated = true;
     } finally {
@@ -132,6 +143,7 @@ function signalGroup(group: number, signal: 'SIGKILL' | 0): boolean {
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === 'ESRCH') return false;
+
     // Darwin can transiently return EPERM while a group member exits. Keep checking.
     if (code === 'EPERM') return true;
     throw new ProcessTeardownError('Cannot verify process-group termination');
@@ -152,6 +164,7 @@ async function within<T>(work: Promise<T>, ms: number, message: string): Promise
 
 if (import.meta.main && process.argv[2] === '--anchor') {
   GroupPlatform.load().moveTo(0);
+
   process.stdout.write('ready\n');
   setTimeout(() => process.exit(0), ANCHOR_MS);
 }

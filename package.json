@@ -11,7 +11,7 @@
   "files": [
     "src/cli.ts",
     "src/adaptors/*.ts",
-    "src/auth/*.ts",
+    "src/auth/**/*.ts",
     "src/catalog/*.ts",
     "src/display/*.ts",
     "src/display/*.tsx",

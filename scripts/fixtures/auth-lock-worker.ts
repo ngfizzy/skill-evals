@@ -5,21 +5,24 @@
 import { spawn } from 'node:child_process';
 
 import { CodexAgent } from '../../src/adaptors/codex.ts';
-import { createAuthContext } from '../../src/auth/context.ts';
-import { CredentialLock } from '../../src/auth/lock.ts';
-import type { AuthStoreLocation } from '../../src/auth/types.ts';
+import { createAuthContext } from '../../src/auth/runtime/context.ts';
+import { CredentialLock } from '../../src/auth/credentials/lock.ts';
+import type { AuthStoreLocation } from '../../src/auth/contracts/types.ts';
 
 const [storeJson, workspace, executable, responsePath, mockPort] = process.argv.slice(2);
+
 if (!storeJson || !workspace || !executable || !responsePath || !mockPort) {
   console.error('Usage: auth-lock-worker.ts <store> <workspace> <codex> <response> <port>');
   process.exit(2);
 }
 
 const store = JSON.parse(storeJson) as AuthStoreLocation;
+
 const lease = await CredentialLock.acquire(store);
 const context = await createAuthContext(store, workspace);
 
 const args = new CodexAgent(executable, 20).command('gpt-6.1-sol', responsePath, 'low');
+
 for (const config of mockProviderConfig(mockPort)) args.push('-c', config);
 
 const child = spawn(args[0]!, [...args.slice(1), '-'], {
@@ -27,6 +30,7 @@ const child = spawn(args[0]!, [...args.slice(1), '-'], {
   env: context.env,
   stdio: ['pipe', 'ignore', 'ignore', lease.fd],
 });
+
 child.once('spawn', () => {
   console.log(child.pid);
   child.stdin!.end('Synthetic lock lifetime audit.');

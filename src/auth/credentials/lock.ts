@@ -3,13 +3,13 @@ import { lstat, open, type FileHandle } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { isSameFile } from '../utils/index.ts';
+import { isSameFile } from '../../utils/index.ts';
+import { AuthError } from '../contracts/errors.ts';
+import type { AuthStoreLocation, CredentialLease } from '../contracts/types.ts';
 
 import { AuthCleanup } from './cleanup.ts';
-import { AuthError } from './errors.ts';
 import { Libc } from './libc.ts';
 import { AuthStore } from './store.ts';
-import type { AuthStoreLocation, CredentialLease } from './types.ts';
 
 const LOCK_FILE_NAME = '.auth.lock';
 const DEFAULT_LOCK_WAIT_MS = 120_000;
@@ -43,6 +43,7 @@ export class CredentialLock implements CredentialLease {
             timeoutMs - (performance.now() - started),
             signal,
           );
+
           CredentialLock.throwIfInterrupted(signal);
           if (!(await AuthCleanup.pending(store))) {
             CredentialLock.throwIfInterrupted(signal);
@@ -54,6 +55,7 @@ export class CredentialLock implements CredentialLease {
         }
         // A matching recovery caller needs to acquire the lease before it can clear a record.
         await file.close();
+
         const remainingMs = timeoutMs - (performance.now() - started);
         if (remainingMs <= 0) throw new AuthError('cleanup-required');
         await delay(Math.min(POLL_INTERVAL_MS, remainingMs), undefined, { signal }).catch(() => {
@@ -67,6 +69,7 @@ export class CredentialLock implements CredentialLease {
 
   static async inherit(store: AuthStoreLocation, fd: number): Promise<CredentialLease> {
     await new AuthStore(store).assertValid();
+
     const identity = fstatSync(fd);
     AuthStore.assertPrivateFile(identity);
     if (
@@ -74,6 +77,7 @@ export class CredentialLock implements CredentialLease {
       !Libc.load().tryLockExclusive(fd)
     )
       throw new AuthError('lock-failed');
+
     let released = false;
     return {
       fd,
@@ -90,6 +94,7 @@ export class CredentialLock implements CredentialLease {
   static async recoverUnclaimed(store: AuthStoreLocation, workspace: string): Promise<void> {
     try {
       await new AuthStore(store).assertValid();
+
       const path = join(store.directory, LOCK_FILE_NAME);
       const file = await CredentialLock.openLockFile(path);
       try {
@@ -132,6 +137,7 @@ export class CredentialLock implements CredentialLease {
     AuthStore.assertPrivateFile(opened);
 
     const started = performance.now();
+
     while (true) {
       CredentialLock.throwIfInterrupted(signal);
       await CredentialLock.assertStillLockFile(path, opened);
@@ -149,6 +155,7 @@ export class CredentialLock implements CredentialLease {
   // The path must still name the file we opened, so a swapped lock file cannot split holders.
   private static async assertStillLockFile(path: string, opened: Stats): Promise<void> {
     const current = await lstat(path);
+
     if (!isSameFile(opened, current)) throw new AuthError('lock-failed');
     AuthStore.assertPrivateFile(current);
   }

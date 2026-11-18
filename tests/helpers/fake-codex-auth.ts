@@ -16,7 +16,7 @@ import {
 } from 'node:fs';
 import { join, dirname } from 'node:path';
 
-import { Libc } from '../../src/auth/libc.ts';
+import { Libc } from '../../src/auth/credentials/libc.ts';
 import { AUDITED_CODEX_VERSION_OUTPUT } from '../../src/adaptors/codex-helpers.ts';
 
 export type FakeCodexAuthMode =
@@ -79,10 +79,12 @@ export async function runFakeCodexAuth(
 
   const authFile = join(process.env.CODEX_HOME!, 'auth.json');
   const ownership = JSON.parse(readFileSync(join(store, '.auth-context.json'), 'utf8'));
+
   writeTrace(tracePath, ownership.guardian);
 
   const operation = process.argv.at(-1);
   if (operation === 'login') await login(mode, authFile, tracePath, ownership);
+
   if (operation === 'logout') logout(mode, authFile);
 }
 
@@ -95,6 +97,7 @@ function writeTrace(path: string, guardian: number): void {
     environment: Object.keys(process.env),
     lockInode: fstatSync(INHERITED_LOCK_FD).ino,
   };
+
   writeFileSync(path, JSON.stringify(trace));
 }
 
@@ -110,6 +113,7 @@ async function login(
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
+
   await printLoginUrl(mode);
   if (mode === 'failure') {
     console.error(LEAKED_DIAGNOSTIC);
@@ -126,6 +130,7 @@ async function login(
   if (mode === 'writer-descendant') {
     const writes = join(dirname(tracePath), 'descendant-writes');
     const descriptor = openSync(authFile, 'r+');
+
     spawn(
       process.execPath,
       [
@@ -141,8 +146,11 @@ async function login(
       { stdio: ['ignore', 'inherit', 'ignore', 'ignore', descriptor] },
     );
     closeSync(descriptor);
+
     while (!existsSync(writes)) await Bun.sleep(5);
+
     await Bun.sleep(100);
+
     writeSync(1, Buffer.from([0xff]));
     return stayAlive();
   }
@@ -172,6 +180,7 @@ async function login(
     case 'hang':
       return stayAlive();
   }
+
   process.exit(0);
 }
 
@@ -180,6 +189,7 @@ async function printLoginUrl(mode: FakeCodexAuthMode): Promise<void> {
 
   const url = Buffer.from(SYNTHETIC_LOGIN_URL.replace('synthetic', 'synthétic'));
   const splitAt = url.indexOf(0xc3) + 1;
+
   process.stderr.write(url.subarray(0, splitAt));
   await Bun.sleep(50);
   process.stderr.write(Buffer.concat([url.subarray(splitAt), Buffer.from('\n')]));
@@ -188,6 +198,7 @@ async function printLoginUrl(mode: FakeCodexAuthMode): Promise<void> {
 async function leaveLateCredentialWriter(authFile: string, guardian: number): Promise<void> {
   const workerHome = process.env.HOME!;
   const descriptor = openSync(authFile, 'r+');
+
   try {
     const writer = spawn(
       process.execPath,
@@ -226,9 +237,11 @@ async function leaveLateCredentialWriter(authFile: string, guardian: number): Pr
 function logout(mode: FakeCodexAuthMode, authFile: string): void {
   if (mode === 'replace-on-logout')
     writeFileSync(authFile, JSON.stringify({ ...SYNTHETIC_CREDENTIALS, extra: 'changed' }));
+
   if (mode === 'replace-identical-on-logout') replaceWithIdenticalCopy(realpathSync(authFile));
 
   unlinkSync(authFile);
+
   process.exit(0);
 }
 

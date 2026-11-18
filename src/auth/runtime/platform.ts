@@ -1,4 +1,4 @@
-import { AuthError } from './errors.ts';
+import { AuthError } from '../contracts/errors.ts';
 
 // Authentication runs only on the Bun runtime that was audited for credential isolation.
 export const AUDITED_BUN_VERSION = '1.4.4';
@@ -17,6 +17,7 @@ const CODEX_TARGETS: Record<string, string> = {
 
 export function supportedPlatform(): SupportedPlatform {
   const key = `${process.platform}-${process.arch}`;
+
   if (!isAuditedAuthPlatform()) throw new AuthError('unsupported-runtime');
 
   return {

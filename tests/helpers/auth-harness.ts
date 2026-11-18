@@ -7,9 +7,9 @@ import type { TestContext } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { AuthService, type AuthEvent, type AuthServiceOptions } from '../../src/auth/index.ts';
-import { CredentialLock } from '../../src/auth/lock.ts';
-import { AuthStore } from '../../src/auth/store.ts';
-import type { AuthStoreLocation } from '../../src/auth/types.ts';
+import { CredentialLock } from '../../src/auth/credentials/lock.ts';
+import { AuthStore } from '../../src/auth/credentials/store.ts';
+import type { AuthStoreLocation } from '../../src/auth/contracts/types.ts';
 
 import {
   SYNTHETIC_CREDENTIALS,
@@ -42,6 +42,7 @@ export class AuthHarness {
       CODEX_API_KEY: 'MUST_NOT_LEAK',
       CODEX_REFRESH_TOKEN_URL_OVERRIDE: 'https://invalid.example',
     };
+
     return new AuthHarness(t, root, home, env, await AuthStore.resolve(env));
   }
 
@@ -123,6 +124,7 @@ export class AuthHarness {
     const children = Array.from({ length: writers }, () =>
       this.spawnHelper('lock-writer.ts', [JSON.stringify(this.store), String(increments)]),
     );
+
     const exitCodes = await Promise.all(
       children.map(async (child) => (await once(child, 'exit'))[0]),
     );
@@ -144,6 +146,7 @@ export class AuthHarness {
 
 export async function killAndWait(child: ChildProcess): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return;
+
   const exited = once(child, 'exit');
   child.kill('SIGKILL');
   await exited;
@@ -156,6 +159,7 @@ export function loginUrlListener(): {
 } {
   let resolve!: () => void;
   const reached = new Promise<void>((done) => (resolve = done));
+
   return {
     reached,
     onEvent: (event) => {

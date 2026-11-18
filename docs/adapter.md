@@ -81,12 +81,16 @@ to a guardian and an authenticated worker. The worker and native Codex run in a 
 ID is the guardian's live PID. The guardian moves back to its original group before authorizing the
 worker. A bounded startup helper creates a control group if the original group has exited. The
 guardian's live PID reserves the worker group's numeric ID, so it cannot signal a group that reused
-an exited launcher's PID. On completion, timeout or parent loss, the guardian terminates and
-confirms exit of its worker group, removes the matching workspace and cleanup record, then exits to
-release its descriptor. Linux supervisors adopt and reap orphaned descendants. On macOS ARM64, the
-supervisor queries kernel process status and confirms that any remaining group members have exited
-and are awaiting reaping. The guardian monitors parent loss through `getppid(2)`. It rechecks the
-login file under the lock after group shutdown and reports success only after cleanup completes.
+an exited launcher's PID.
+
+On completion, timeout or parent loss, the guardian terminates and confirms exit of its worker
+group, removes the matching workspace and cleanup record, then exits to release its descriptor.
+
+Linux supervisors adopt and reap orphaned descendants. On macOS ARM64, the supervisor queries kernel
+process status and confirms that any remaining group members have exited and are awaiting reaping.
+The shared `ProcessGuardian` owns group teardown and monitors parent loss through `getppid(2)` for
+auth, Codex evaluations, and Git subprocesses. Auth rechecks the login file under the lock after
+group shutdown and reports success only after cleanup completes.
 
 Context cleanup removes and verifies the auth link before deleting other temporary files. If cleanup
 fails, the guardian keeps the actual OS lock and retries cleanup; it never expires or steals

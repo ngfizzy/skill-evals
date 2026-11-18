@@ -15,10 +15,9 @@ import { isAbsolute, join, resolve } from 'node:path';
 
 import { z } from 'zod';
 
-import { ensureDirectory, isSameFile, readUpTo } from '../utils/index.ts';
-
-import { AuthError } from './errors.ts';
-import type { AuthState, AuthStoreLocation } from './types.ts';
+import { ensureDirectory, isSameFile, readUpTo } from '../../utils/index.ts';
+import { AuthError } from '../contracts/errors.ts';
+import type { AuthState, AuthStoreLocation } from '../contracts/types.ts';
 
 export const MAX_CREDENTIAL_BYTES = 65_536;
 
@@ -71,6 +70,7 @@ export class AuthStore {
         authFile: join(directory, AUTH_FILE_NAME),
         normalDirectory: resolve(env.CODEX_HOME || join(home, '.codex')),
       });
+
       await store.assertValid();
       return store;
     } catch {
@@ -88,7 +88,9 @@ export class AuthStore {
   async publishLogin(staged: AuthStore): Promise<void> {
     const credentials = await staged.readCredentials();
     if (credentials === undefined) throw new AuthError('login-required');
+
     await this.assertValid();
+
     const temporary = join(this.location.directory, `.${AUTH_FILE_NAME}.${randomUUID()}`);
     const file = await open(temporary, 'wx', PRIVATE_FILE_MODE);
     try {
@@ -97,6 +99,7 @@ export class AuthStore {
       } finally {
         await file.close();
       }
+
       await rename(temporary, this.location.authFile);
     } finally {
       await unlink(temporary).catch((error: NodeJS.ErrnoException) => {
@@ -121,8 +124,10 @@ export class AuthStore {
 
     try {
       const text = await this.readCredentialFile(file);
+
       if (!chatgptCredentialsSchema.safeParse(JSON.parse(text)).success)
         throw new AuthError('invalid-credentials');
+
       return text;
     } catch (error) {
       if (error instanceof AuthError) throw error;

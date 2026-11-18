@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { isAuditedAuthPlatform } from '../src/auth/platform.ts';
+import { isAuditedAuthPlatform } from '../src/auth/runtime/platform.ts';
 
 const temporary = mkdtempSync(join(tmpdir(), 'skill-evals-install-'));
 const execute = (command: string, args: string[], cwd: string, env = process.env): string => {
@@ -48,6 +48,7 @@ try {
   );
 
   const executable = join(prefix, 'node_modules', '.bin', 'skill-evals');
+
   assert.match(execute(executable, ['--help'], temporary), /Usage: skill-evals/);
   assert.match(execute(executable, ['auth', '--help'], temporary), /login\|status\|logout/);
 
@@ -55,6 +56,7 @@ try {
   const list = execute(executable, ['--root', root, '--list'], temporary);
   assert.match(list, /routing\/behavior-1/);
   assert.match(list, /caution\/proposed-review/);
+
   const scoped = execute(
     executable,
     ['--root', root, '--load-skill', 'routing', '--list'],
@@ -98,7 +100,9 @@ assert.equal(agent.version, 'codex-cli 0.165.0');
       XDG_DATA_HOME: data,
       CODEX_HOME: join(data, 'normal'),
     };
+
     assert.equal(execute(executable, ['auth', 'status'], temporary, env).trim(), 'signed-out');
+
     const credentials = join(data, 'skill-evals', 'codex-auth', 'auth.json');
     writeFileSync(
       credentials,
@@ -112,9 +116,11 @@ assert.equal(agent.version, 'codex-cli 0.165.0');
       }),
       { mode: 0o600 },
     );
+
     assert.equal(execute(executable, ['auth', 'status'], temporary, env).trim(), 'signed-in');
     assert.equal(execute(executable, ['auth', 'logout'], temporary, env).trim(), 'signed-out');
     assert.equal(await Bun.file(credentials).exists(), false);
+
     console.log('Installed CLI auth status and logout passed using a separate synthetic store.');
   } else {
     console.log('Installed auth smoke skipped outside the audited platform matrix.');

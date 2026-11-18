@@ -1,24 +1,30 @@
 import { lstat, unlink } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 
-import { AUDITED_CODEX_VERSION_OUTPUT } from '../adaptors/codex-helpers.ts';
-import { isSameFile, readBounded, sha256, type FileIdentity } from '../utils/index.ts';
+import { AUDITED_CODEX_VERSION_OUTPUT } from '../../adaptors/codex-helpers.ts';
+import { isSameFile, readBounded, sha256, type FileIdentity } from '../../utils/index.ts';
+import { AuthError } from '../contracts/errors.ts';
+import type {
+  AuthEvent,
+  AuthLauncherRequest,
+  AuthState,
+  CredentialLease,
+} from '../contracts/types.ts';
+import { AuthCleanup } from '../credentials/cleanup.ts';
+import { CredentialLock } from '../credentials/lock.ts';
+import { AuthStore, MAX_CREDENTIAL_BYTES } from '../credentials/store.ts';
 
-import { AuthCleanup } from './cleanup.ts';
 import {
   createAuthContext,
   createLoginContext,
   stagedLoginStore,
   type NativeAuthContext,
 } from './context.ts';
-import { AuthError } from './errors.ts';
-import { CleanupGuardian } from './guardian.ts';
-import { CredentialLock } from './lock.ts';
+import { GuardedAuth } from './guarded-auth.ts';
 import { runNativeAuth } from './native.ts';
-import { AuthStore, MAX_CREDENTIAL_BYTES } from './store.ts';
-import type { AuthEvent, AuthLauncherRequest, AuthState, CredentialLease } from './types.ts';
 
 const VERSION_PROBE_TIMEOUT_MS = 20_000;
+
 const NATIVE_AUTH_CONFIG = [
   '-c',
   'cli_auth_credentials_store="file"',
@@ -42,9 +48,12 @@ export class AuthLauncherJob {
     if (!isAbsolute(request.nativeExecutable) || !isAbsolute(request.workspace))
       throw new AuthError('invalid-store');
     AuthStore.assertPrivateDirectory(await lstat(request.workspace));
+
     const lease = await CredentialLock.acquire(request.store, undefined, request.lockWaitMs);
+
     try {
       const state = await new AuthStore(request.store).inspectCredentials();
+
       if (
         request.operation === 'status' ||
         (request.operation === 'logout' && state === 'signed-out')
@@ -53,7 +62,7 @@ export class AuthLauncherJob {
         return;
       }
       await AuthCleanup.begin(request.store, request.workspace);
-      await CleanupGuardian.run(request, lease.fd, emit);
+      await GuardedAuth.run(request, lease.fd, emit);
     } finally {
       await lease.release();
     }
@@ -66,6 +75,7 @@ export class AuthLauncherJob {
 
     const store = new AuthStore(request.store);
     const lease = await CredentialLock.inherit(request.store, 3);
+
     try {
       const job = new AuthLauncherJob(request, store, lease, emit);
       const state = await job.perform(await store.inspectCredentials());
@@ -92,7 +102,9 @@ export class AuthLauncherJob {
     try {
       const session = new NativeAuthSession(this.request, this.lease, context, this.emit);
       await session.verifyRuntime();
+
       await session.run('login');
+
       if ((await stagedLoginStore(store, workspace).inspectCredentials()) !== 'signed-in')
         throw new AuthError('login-required');
       return 'signed-in';
@@ -110,6 +122,7 @@ export class AuthLauncherJob {
       const session = new NativeAuthSession(this.request, this.lease, context, this.emit);
       await session.verifyRuntime();
       await context.verifyLink();
+
       await session.run('logout');
       await context.verifyLink(true);
 
@@ -140,6 +153,7 @@ class NativeAuthSession {
 
   async verifyRuntime(): Promise<void> {
     const version = await this.runNative(['--version'], VERSION_PROBE_TIMEOUT_MS);
+
     if (version.code !== 0 || version.stdout.trim() !== AUDITED_CODEX_VERSION_OUTPUT)
       throw new AuthError('unsupported-runtime');
   }

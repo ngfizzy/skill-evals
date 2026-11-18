@@ -1,27 +1,27 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { writeSync } from 'node:fs';
-import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
-import { OwnedProcessGroup } from '../process/group.ts';
-import { MAX_OUTPUT } from '../process/index.ts';
+import { ProcessGuardian, retryTeardown } from '../../process/guardian.ts';
+import { MAX_OUTPUT } from '../../process/index.ts';
+import { AuthError } from '../contracts/errors.ts';
+import { authRequestSchema, serializeAuthEvent } from '../contracts/protocol.ts';
+import type { AuthEvent, AuthLauncherRequest } from '../contracts/types.ts';
+import { AuthCleanup } from '../credentials/cleanup.ts';
+import { CredentialLock } from '../credentials/lock.ts';
+import { AuthStore } from '../credentials/store.ts';
 
 import { launcherEnvironment, stagedLoginStore } from './context.ts';
-import { AuthCleanup } from './cleanup.ts';
-import { AuthError } from './errors.ts';
 import { LauncherEventReader } from './events.ts';
-import { CredentialLock } from './lock.ts';
-import { authRequestSchema, serializeAuthEvent } from './protocol.ts';
-import { AuthStore } from './store.ts';
-import type { AuthEvent, AuthLauncherRequest } from './types.ts';
 
-export class CleanupGuardian {
+export class GuardedAuth {
   static async run(
     request: AuthLauncherRequest,
     lockFd: number,
     emit: (event: AuthEvent) => void,
   ): Promise<void> {
     await AuthCleanup.prepareGuardian(request.store, request.workspace);
+
     const child = spawn(
       process.execPath,
       [
@@ -37,6 +37,7 @@ export class CleanupGuardian {
         stdio: ['ignore', 'pipe', 'ignore', lockFd],
       },
     );
+
     const events = new LauncherEventReader(emit);
     try {
       await new Promise<void>((resolve, reject) => {
@@ -48,6 +49,7 @@ export class CleanupGuardian {
             reject(error);
           }
         });
+
         child.once('close', (code) => {
           if (code === 0) resolve();
           else reject(events.failure ?? new AuthError('operation-failed'));
@@ -67,20 +69,24 @@ export class CleanupGuardian {
   }
 }
 
-class GuardianRun {
+class GuardedAuthRun {
   private claimed = false;
-  private stopping = false;
-  private result = 0;
-  private events: LauncherEventReader | undefined;
-  private stopWorker: (() => Promise<void>) | undefined;
-  private workerClosed: Promise<void> | undefined;
-  private parentPoll: ReturnType<typeof setInterval> | undefined;
-  private deadline: ReturnType<typeof setTimeout> | undefined;
+  private workerFailed = false;
+  private recoveryReported = false;
+  private readonly events: LauncherEventReader;
 
   constructor(
     private readonly request: AuthLauncherRequest,
-    private readonly launcher: number,
-  ) {}
+    private readonly guardian: ProcessGuardian,
+  ) {
+    this.events = new LauncherEventReader((event) => {
+      if (event.type === 'login-url') this.report(event);
+
+      if (event.type === 'state') this.guardian.stop();
+
+      if (event.type === 'error') this.failWorker();
+    });
+  }
 
   async start(): Promise<void> {
     const { store, workspace } = this.request;
@@ -93,103 +99,77 @@ class GuardianRun {
     }
 
     try {
-      if (OwnedProcessGroup.parentPid() !== this.launcher) throw new AuthError('interrupted');
+      if (!this.guardian.hasParent()) throw new AuthError('interrupted');
+
       await AuthCleanup.claim(store, workspace);
       this.claimed = true;
-      await this.startWorker();
+
+      await this.runWorker();
     } catch {
-      await this.stop(2);
+      this.workerFailed = true;
     }
+
+    const event = await this.verifiedResult();
+    await retryTeardown(
+      () =>
+        this.claimed
+          ? AuthCleanup.finishGuardian(store, workspace)
+          : AuthCleanup.finishUnclaimed(store, workspace),
+      () => this.reportRecovery(),
+    );
+
+    if (!this.recoveryReported) this.report(event);
+    process.exit(!this.recoveryReported && event.type === 'state' ? 0 : 2);
   }
 
-  private async startWorker(): Promise<void> {
-    const group = new OwnedProcessGroup();
+  private async runWorker(): Promise<void> {
     const env = launcherEnvironment(this.request.workspace);
-    const { child, exited } = await group.start(() => {
-      const worker = spawn(
-        process.execPath,
-        ['--no-env-file', '--no-install', fileURLToPath(new URL('./worker.ts', import.meta.url))],
-        { env, stdio: ['pipe', 'pipe', 'ignore', 3] },
-      );
-      this.workerClosed = new Promise<void>((resolve) => worker.once('close', () => resolve()));
-      worker.stdin!.on('error', () => void this.stop(2));
-      return worker;
-    }, env);
-    this.stopWorker = () => group.stop(exited);
 
-    this.events = new LauncherEventReader((event) => {
-      if (event.type === 'login-url') this.report(event);
-      if (event.type === 'state') void this.stop(0);
-      if (event.type === 'error') void this.stop(2);
+    const outcome = await this.guardian.run({
+      env,
+      spawn: () =>
+        spawn(
+          process.execPath,
+          ['--no-env-file', '--no-install', fileURLToPath(new URL('./worker.ts', import.meta.url))],
+          { env, stdio: ['pipe', 'pipe', 'ignore', 3] },
+        ),
+      authorize: (worker) => this.sendRequest(worker),
+      timeoutMs: this.request.timeoutMs + 25_000,
+      onTeardownFailure: () => this.reportRecovery(),
     });
+
+    await outcome.closed;
+    if (outcome.interrupted || (outcome.exit && outcome.exit.code !== 0)) this.workerFailed = true;
+  }
+
+  private sendRequest(worker: ChildProcess): void {
+    const { stdin, stdout } = worker;
+    if (!stdin || !stdout) throw new AuthError('operation-failed');
+
     let bytes = 0;
-    child.stdout!.on('data', (chunk: Buffer) => {
+    stdout.on('data', (chunk: Buffer) => {
       try {
         bytes += chunk.length;
         if (bytes > MAX_OUTPUT) throw new AuthError('operation-failed');
-        this.events!.consume(chunk);
+        this.events.consume(chunk);
       } catch {
-        void this.stop(2);
+        this.failWorker();
       }
     });
-    void exited.then(({ code }) => {
-      if (!this.stopping) void this.stop(code ?? 2);
-    });
 
-    this.deadline = setTimeout(() => void this.stop(2), this.request.timeoutMs + 25_000);
-    this.parentPoll = setInterval(() => {
-      if (OwnedProcessGroup.parentPid() !== this.launcher) void this.stop(2);
-    }, 25);
-    if (OwnedProcessGroup.parentPid() !== this.launcher) {
-      await this.stop(2);
-      return;
-    }
-    child.stdin!.end(JSON.stringify(this.request));
+    stdin.on('error', () => this.failWorker());
+    stdin.end(JSON.stringify(this.request));
   }
 
-  private async stop(code: number): Promise<void> {
-    if (code !== 0) this.result = 2;
-    if (this.stopping) return;
-
-    this.stopping = true;
-    if (this.parentPoll) clearInterval(this.parentPoll);
-    if (this.deadline) clearTimeout(this.deadline);
-
-    let reported = false;
-    const retry = async (work: () => Promise<void>) => {
-      while (true) {
-        try {
-          await work();
-          return;
-        } catch {
-          if (!reported) {
-            this.report({ type: 'error', code: 'cleanup-required' });
-            reported = true;
-          }
-          await delay(250);
-        }
-      }
-    };
-
-    if (this.stopWorker) await retry(this.stopWorker);
-    await this.workerClosed;
-    const event = await this.verifiedResult();
-
-    const { store, workspace } = this.request;
-    await retry(() =>
-      this.claimed
-        ? AuthCleanup.finishGuardian(store, workspace)
-        : AuthCleanup.finishUnclaimed(store, workspace),
-    );
-
-    if (!reported) this.report(event);
-    process.exit(!reported && event.type === 'state' ? 0 : 2);
+  private failWorker(): void {
+    this.workerFailed = true;
+    this.guardian.stop();
   }
 
   private async verifiedResult(): Promise<AuthEvent> {
     try {
-      if (this.result !== 0 || !this.events)
-        throw this.events?.failure ?? new AuthError('operation-failed');
+      if (this.workerFailed) throw this.events.failure ?? new AuthError('operation-failed');
+
       const state = this.events.finalState();
       const { operation, store, workspace } = this.request;
       if (operation === 'login' && state === 'signed-in') {
@@ -199,10 +179,17 @@ class GuardianRun {
         if ((await managed.inspectCredentials()) !== 'signed-in')
           throw new AuthError('login-required');
       }
+
       return { type: 'state', state };
     } catch (error) {
       return { type: 'error', code: error instanceof AuthError ? error.code : 'operation-failed' };
     }
+  }
+
+  private reportRecovery(): void {
+    if (this.recoveryReported) return;
+    this.recoveryReported = true;
+    this.report({ type: 'error', code: 'cleanup-required' });
   }
 
   private report(event: AuthEvent): void {
@@ -217,6 +204,8 @@ class GuardianRun {
 if (import.meta.main) {
   const request = authRequestSchema.parse(JSON.parse(process.argv[2]!));
   const launcher = Number(process.argv[3]);
+
   if (!Number.isSafeInteger(launcher) || launcher <= 1) throw new AuthError('operation-failed');
-  await new GuardianRun(request, launcher).start();
+
+  await new GuardedAuthRun(request, new ProcessGuardian(launcher)).start();
 }

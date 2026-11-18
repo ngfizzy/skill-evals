@@ -28,37 +28,36 @@ const expected = [
   'README.md',
   'LICENSE',
   'PROVENANCE.md',
+
   'src/cli.ts',
   'src/adaptors/codex-helpers.ts',
   'src/adaptors/codex.ts',
   'src/adaptors/index.ts',
   'src/adaptors/types.ts',
+
+  'src/auth/index.ts',
+  'src/auth/service.ts',
+  ...['errors', 'protocol', 'types'].map((name) => `src/auth/contracts/${name}.ts`),
+  ...['cleanup', 'libc', 'lock', 'store'].map((name) => `src/auth/credentials/${name}.ts`),
   ...[
-    'cleanup',
     'context',
-    'errors',
     'events',
-    'guardian',
-    'index',
+    'guarded-auth',
     'launcher',
-    'libc',
     'lines',
-    'lock',
     'native',
     'operations',
+    'packaged-codex',
     'platform',
-    'protocol',
-    'runtime',
-    'service',
-    'store',
-    'types',
     'worker',
-  ].map((name) => `src/auth/${name}.ts`),
+  ].map((name) => `src/auth/runtime/${name}.ts`),
+
   'src/catalog/catalog.ts',
   'src/catalog/helpers.ts',
   'src/catalog/index.ts',
   'src/catalog/root.ts',
   'src/catalog/types.ts',
+
   'src/display/components/index.ts',
   ...[
     'assertion-item',
@@ -99,6 +98,7 @@ const expected = [
   'src/display/types.ts',
   'src/display/view-model.ts',
   'src/display/theme.ts',
+
   'src/evaluation/batch-runner.ts',
   'src/evaluation/helpers.ts',
   'src/evaluation/index.ts',
@@ -106,28 +106,35 @@ const expected = [
   'src/evaluation/protocol.ts',
   'src/evaluation/schemas.ts',
   'src/evaluation/types.ts',
+
   'src/judge/helpers.ts',
   'src/judge/index.ts',
   'src/judge/judge.ts',
   'src/judge/output-schema.ts',
   'src/judge/types.ts',
+
   'src/operator/index.ts',
   'src/operator/operator.ts',
   'src/operator/types.ts',
+
   'src/process/group-platform.ts',
   'src/process/group.ts',
+  'src/process/guardian.ts',
   'src/process/index.ts',
   'src/process/process.ts',
   'src/process/supervisor.ts',
   'src/process/types.ts',
+
   'src/prompts/index.ts',
   'src/prompts/judge.ts',
   'src/prompts/operator.ts',
+
   'src/report/helpers.ts',
   'src/report/index.ts',
   'src/report/inspection.ts',
   'src/report/types.ts',
   'src/report/writer.ts',
+
   'src/runner/auth-command.ts',
   'src/runner/console-io.ts',
   'src/runner/help.ts',
@@ -136,9 +143,11 @@ const expected = [
   'src/runner/options.ts',
   'src/runner/runner.ts',
   'src/runner/types.ts',
+
   ...['git-command', 'git-tree', 'git', 'index', 'input', 'local', 'resolve', 'types'].map(
     (name) => `src/sources/${name}.ts`,
   ),
+
   'src/utils/binary.ts',
   'src/utils/files.ts',
   'src/utils/index.ts',
@@ -146,7 +155,9 @@ const expected = [
   'src/utils/sha256.ts',
   'src/utils/terminal-text.ts',
   'src/utils/validation.ts',
+
   ...['cases', 'reports', 'adapter'].map((name) => `docs/${name}.md`),
+
   'examples/basic/external-skills.yaml',
   'examples/basic/skills/routing/SKILL.md',
   'examples/basic/skills/routing/eval.yaml',

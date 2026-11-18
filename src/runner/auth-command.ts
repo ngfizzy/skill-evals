@@ -1,5 +1,5 @@
 import { AuthError, AuthService } from '../auth/index.ts';
-import { AUTH_OPERATIONS, type AuthOperation } from '../auth/types.ts';
+import { AUTH_OPERATIONS, type AuthOperation } from '../auth/contracts/types.ts';
 
 import type { RunIO } from './types.ts';
 
@@ -18,6 +18,7 @@ export async function runAuthCommand(
     io.out(AUTH_HELP);
     return 0;
   }
+
   const operation = AUTH_OPERATIONS.find((candidate) => candidate === args[0]);
   if (args.length !== 1 || !operation)
     throw new Error('Usage: skill-evals auth <login|status|logout>');

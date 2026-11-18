@@ -1,13 +1,15 @@
-import { AuthError } from './errors.ts';
+import { AuthError } from '../contracts/errors.ts';
+import { parseAuthEvent } from '../contracts/protocol.ts';
+import type { AuthEvent, AuthState } from '../contracts/types.ts';
+
 import { LineBuffer } from './lines.ts';
-import { parseAuthEvent } from './protocol.ts';
-import type { AuthEvent, AuthState } from './types.ts';
 
 // Reads the launcher's newline-delimited JSON events and tracks the reported outcome.
 // Every failure surfaces as an AuthError, so launcher output never reaches diagnostics.
 export class LauncherEventReader {
   private readonly decoder = new TextDecoder('utf-8', { fatal: true });
   private readonly lines = new LineBuffer();
+
   private state: AuthState | undefined;
   failure: AuthError | undefined;
 
@@ -17,7 +19,9 @@ export class LauncherEventReader {
   consume(chunk: Buffer): void {
     for (const line of this.lines.push(this.decode(chunk))) {
       const event = parseAuthEvent(line);
+
       if (event.type === 'error') this.failure = new AuthError(event.code);
+
       if (event.type === 'state') this.state = event.state;
 
       this.onEvent?.(event);
@@ -30,6 +34,7 @@ export class LauncherEventReader {
     const trailing = this.lines.remainder + this.decode();
     if (trailing || !this.state || this.failure)
       throw this.failure ?? new AuthError('operation-failed');
+
     return this.state;
   }
 

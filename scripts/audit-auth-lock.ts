@@ -6,10 +6,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { AuthCleanup } from '../src/auth/cleanup.ts';
-import { CredentialLock } from '../src/auth/lock.ts';
-import { packagedAuthRuntime } from '../src/auth/runtime.ts';
-import { AuthStore } from '../src/auth/store.ts';
+import { AuthCleanup } from '../src/auth/credentials/cleanup.ts';
+import { CredentialLock } from '../src/auth/credentials/lock.ts';
+import { packagedAuthRuntime } from '../src/auth/runtime/packaged-codex.ts';
+import { AuthStore } from '../src/auth/credentials/store.ts';
 
 const WORKER = fileURLToPath(new URL('./fixtures/auth-lock-worker.ts', import.meta.url));
 const READINESS_TIMEOUT_MS = 15_000;
@@ -20,8 +20,10 @@ const READINESS_TIMEOUT_MS = 15_000;
 async function audit(root: string): Promise<void> {
   const workspace = join(root, 'workspace');
   await mkdir(workspace, { mode: 0o700 });
+
   const store = (await AuthStore.resolve({ HOME: root, XDG_DATA_HOME: root })).location;
   const executable = process.argv[2] ?? packagedAuthRuntime();
+
   const provider = startMockProvider();
 
   const worker = spawn(
@@ -46,6 +48,7 @@ async function audit(root: string): Promise<void> {
     );
 
     await killAndWait(worker);
+
     await assert.rejects(CredentialLock.acquire(store, undefined, 100), /Timed out/);
 
     process.kill(nativePid, 'SIGKILL');
@@ -53,6 +56,7 @@ async function audit(root: string): Promise<void> {
       code: 'cleanup-required',
     });
     await AuthCleanup.finish(store, workspace);
+
     const recovered = await CredentialLock.acquire(store, undefined, 2000);
     await recovered.release();
 
@@ -69,6 +73,7 @@ async function audit(root: string): Promise<void> {
 function startMockProvider() {
   let reached!: () => void;
   const requested = new Promise<void>((resolve) => (reached = resolve));
+
   const server = Bun.serve({
     hostname: '127.0.0.1',
     port: 0,

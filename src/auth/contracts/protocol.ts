@@ -1,8 +1,7 @@
 import { z } from 'zod';
 
 import { AUTH_ERROR_CODES, AuthError } from './errors.ts';
-import { AUTH_OPERATIONS, AUTH_STATES } from './types.ts';
-import type { AuthEvent, AuthLauncherRequest } from './types.ts';
+import { AUTH_OPERATIONS, AUTH_STATES, type AuthEvent, type AuthLauncherRequest } from './types.ts';
 
 const MAX_LAUNCHER_REQUEST_BYTES = 65_536;
 
@@ -65,12 +64,14 @@ export async function readAuthRequest(
     const decoder = new TextDecoder('utf-8', { fatal: true });
     let text = '';
     let bytes = 0;
+
     for await (const chunk of input) {
       const buffer = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
       bytes += buffer.length;
       if (bytes > MAX_LAUNCHER_REQUEST_BYTES) throw new AuthError('operation-failed');
       text += decoder.decode(buffer, { stream: true });
     }
+
     return authRequestSchema.parse(JSON.parse(text + decoder.decode()));
   } catch {
     throw new AuthError('operation-failed');
@@ -85,8 +86,10 @@ export function serializeAuthEvent(event: AuthEvent): string {
 export function parseAuthEvent(text: string): AuthEvent {
   try {
     const event = authEventSchema.parse(JSON.parse(text));
+
     if (event.type === 'login-url' && loginUrl(event.url) !== event.url)
       throw new AuthError('operation-failed');
+
     return event;
   } catch {
     throw new AuthError('operation-failed');

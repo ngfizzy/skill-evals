@@ -5,19 +5,19 @@ import { fileURLToPath } from 'node:url';
 
 import { ProcessManager, ProcessTeardownError } from '../process/index.ts';
 
-import { AuthCleanup } from './cleanup.ts';
-import { launcherEnvironment } from './context.ts';
-import { AuthError } from './errors.ts';
-import { LauncherEventReader } from './events.ts';
-import { CredentialLock } from './lock.ts';
-import { packagedAuthRuntime } from './runtime.ts';
-import { AuthStore } from './store.ts';
+import { AuthError } from './contracts/errors.ts';
 import type {
   AuthLauncherRequest,
   AuthOperation,
   AuthOperationOptions,
   AuthState,
-} from './types.ts';
+} from './contracts/types.ts';
+import { AuthCleanup } from './credentials/cleanup.ts';
+import { CredentialLock } from './credentials/lock.ts';
+import { AuthStore } from './credentials/store.ts';
+import { launcherEnvironment } from './runtime/context.ts';
+import { LauncherEventReader } from './runtime/events.ts';
+import { packagedAuthRuntime } from './runtime/packaged-codex.ts';
 
 const LOGIN_TIMEOUT_MS = 15 * 60_000;
 const COMMAND_TIMEOUT_MS = 20_000;
@@ -29,7 +29,7 @@ const LAUNCHER_COMMAND = [
   process.execPath,
   '--no-env-file',
   '--no-install',
-  fileURLToPath(new URL('./launcher.ts', import.meta.url)),
+  fileURLToPath(new URL('./runtime/launcher.ts', import.meta.url)),
 ];
 
 export interface AuthServiceOptions {
@@ -49,11 +49,13 @@ export class AuthService {
     if (options.signal?.aborted) throw new AuthError('interrupted');
 
     const store = await AuthStore.resolve(this.options.env);
+
     const workspace = await realpath(tmpdir())
       .then((root) => mkdtemp(join(root, 'skill-evals-auth-operation-')))
       .catch(() => {
         throw new AuthError('operation-failed');
       });
+
     let cleanupSafe = true;
     try {
       const home = join(workspace, 'launcher-home');
@@ -61,6 +63,7 @@ export class AuthService {
 
       const request = this.launcherRequest(operation, store, workspace);
       const events = new LauncherEventReader(options.onEvent);
+
       try {
         await this.processManager.run(LAUNCHER_COMMAND, {
           input: JSON.stringify(request),
@@ -75,6 +78,7 @@ export class AuthService {
       } catch (error) {
         if (error instanceof ProcessTeardownError || events.failure?.code === 'cleanup-required')
           cleanupSafe = false;
+
         if (options.signal?.aborted) throw new AuthError('interrupted');
         throw events.failure ?? new AuthError('operation-failed');
       }
@@ -82,6 +86,7 @@ export class AuthService {
       return events.finalState();
     } finally {
       if (!cleanupSafe) throw new AuthError('cleanup-required');
+
       try {
         await AuthCleanup.finish(store.location, workspace);
       } catch {

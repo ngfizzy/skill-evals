@@ -18,14 +18,14 @@ import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { spyOn } from 'bun:test';
 
+import { loginUrl, readAuthRequest } from '../src/auth/contracts/protocol.ts';
+import { AuthCleanup } from '../src/auth/credentials/cleanup.ts';
+import { CredentialLock } from '../src/auth/credentials/lock.ts';
+import { AuthStore } from '../src/auth/credentials/store.ts';
 import { AuthError, type AuthErrorCode } from '../src/auth/index.ts';
-import { AuthCleanup } from '../src/auth/cleanup.ts';
-import { createAuthContext } from '../src/auth/context.ts';
-import { LauncherEventReader } from '../src/auth/events.ts';
-import { CredentialLock } from '../src/auth/lock.ts';
-import { AuthLauncherJob } from '../src/auth/operations.ts';
-import { loginUrl, readAuthRequest } from '../src/auth/protocol.ts';
-import { AuthStore } from '../src/auth/store.ts';
+import { createAuthContext } from '../src/auth/runtime/context.ts';
+import { LauncherEventReader } from '../src/auth/runtime/events.ts';
+import { AuthLauncherJob } from '../src/auth/runtime/operations.ts';
 
 import { AuthHarness, killAndWait, loginUrlListener } from './helpers/auth-harness.ts';
 import {
@@ -89,6 +89,7 @@ describe('AuthStore.inspectCredentials', () => {
     ['malformed JSON', 'invalid'],
     ['an API key', JSON.stringify({ ...SYNTHETIC_CREDENTIALS, OPENAI_API_KEY: 'SYNTHETIC_KEY' })],
   ];
+
   for (const [description, contents] of invalidCredentials)
     test(`rejects credentials containing ${description}`, async (t) => {
       const auth = await AuthHarness.create(t);
@@ -168,8 +169,10 @@ describe('cleanup ownership', () => {
     const workspace = join(auth.root, 'failed spawn');
     await mkdir(workspace, { mode: 0o700 });
     const missing = join(workspace, 'nonexistent-executable');
+
     const failedChild = new childProcess.ChildProcess();
     Object.defineProperty(failedChild, 'stdout', { value: new PassThrough() });
+
     const guardianSpawn = spyOn(childProcess, 'spawn').mockImplementation((() => {
       const error = Object.assign(new Error('spawn failed'), { code: 'EAGAIN' });
       queueMicrotask(() => failedChild.emit('error', error));
@@ -373,6 +376,7 @@ describe('loginUrl', () => {
       undefined,
     ],
   ];
+
   for (const [description, text, expected] of cases)
     test(description, () => {
       assert.equal(loginUrl(text), expected);
@@ -539,7 +543,8 @@ describe('AuthService', () => {
     try {
       await AuthCleanup.begin(auth.store, workspace);
       await AuthCleanup.prepareGuardian(auth.store, workspace);
-      const script = fileURLToPath(new URL('../src/auth/guardian.ts', import.meta.url));
+
+      const script = fileURLToPath(new URL('../src/auth/runtime/guarded-auth.ts', import.meta.url));
       const child = childProcess.spawn(
         process.execPath,
         [
@@ -560,6 +565,7 @@ describe('AuthService', () => {
         { stdio: ['ignore', 'pipe', 'inherit', lease.fd] },
       );
       t.after(() => killAndWait(child));
+
       const [code] = await once(child, 'close', { signal: AbortSignal.timeout(5000) });
       assert.equal(code, 2);
       assert.equal(await AuthCleanup.pending(auth.store), false);
@@ -587,6 +593,7 @@ describe('AuthService', () => {
     ['invalid-utf8', 'writes invalid UTF-8'],
     ['descendant', 'leaves a descendant holding its pipes'],
   ];
+
   for (const [mode, behavior] of misbehavingRuntimes)
     test(`login stops promptly when native Codex ${behavior}`, async (t) => {
       const auth = await AuthHarness.create(t);
@@ -627,10 +634,12 @@ describe('AuthService', () => {
             });
             t.after(() => observer?.kill('SIGKILL'));
           }
+
           // Delay the parent's error handling. The launcher can exit while this callback runs,
           // so a separate application process can observe any premature lease release.
           if (event.type === 'error') {
             const until = performance.now() + 500;
+
             while (performance.now() < until) {
               /* intentionally delay parent teardown */
             }
@@ -641,6 +650,7 @@ describe('AuthService', () => {
     );
     assert.ok(observed);
     assert.equal(await observed, 0);
+
     await auth.assertLockAvailable();
     await auth.assertNativeContextRemoved();
   });
@@ -679,7 +689,9 @@ describe('AuthService', () => {
   test('a killed guardian leaves a recovery record that blocks store reuse', async (t) => {
     const auth = await AuthHarness.create(t);
     const service = await auth.service('kill-guardian');
+
     await assert.rejects(service.execute('login'), authError('cleanup-required'));
+
     const path = join(auth.store.directory, '.auth-context.json');
     const record = JSON.parse(await readFile(path, 'utf8'));
     await assert.rejects(
@@ -745,6 +757,7 @@ describe('AuthService', () => {
     });
 
     await assert.rejects(login, authError('interrupted'));
+
     const trace = await auth.readTrace();
     assert.equal(trace.nativeGroup, trace.guardian);
     assert.notEqual(trace.nativePid, trace.guardian);

@@ -1,10 +1,10 @@
 import { mkdtemp, mkdir, readlink, rm, symlink, unlink, lstat } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { AuthCleanup } from './cleanup.ts';
-import { AuthError } from './errors.ts';
-import { AuthStore } from './store.ts';
-import type { AuthStoreLocation } from './types.ts';
+import { AuthError } from '../contracts/errors.ts';
+import type { AuthStoreLocation } from '../contracts/types.ts';
+import { AuthCleanup } from '../credentials/cleanup.ts';
+import { AuthStore } from '../credentials/store.ts';
 
 export const SYSTEM_PATH = '/usr/bin:/bin';
 
@@ -33,11 +33,14 @@ export async function createLoginContext(
 ): Promise<NativeAuthContext> {
   await new AuthStore(store).assertValid();
   await AuthCleanup.begin(store, workspace);
+
   const directory = await mkdtemp(join(workspace, 'context-'));
   const home = join(directory, 'home');
   const codexHome = stagedLoginStore(store, workspace).location.directory;
+
   await mkdir(home, { mode: 0o700 });
   await mkdir(codexHome, { mode: 0o700 });
+
   return {
     directory,
     home,
@@ -57,14 +60,17 @@ export async function createAuthContext(
   await new AuthStore(store).assertValid();
 
   await AuthCleanup.begin(store, workspace);
+
   const directory = await mkdtemp(join(workspace, 'context-'));
   const home = join(directory, 'home');
   const codexHome = join(directory, 'codex');
   const link = join(codexHome, 'auth.json');
+
   const dispose = async () => {
     await unlink(link).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== 'ENOENT') throw error;
     });
+
     await lstat(link).then(
       () => {
         throw new AuthError('cleanup-required');
@@ -73,11 +79,13 @@ export async function createAuthContext(
         if (error.code !== 'ENOENT') throw error;
       },
     );
+
     await rm(directory, { recursive: true, force: true });
   };
 
   try {
     for (const folder of [home, codexHome]) await mkdir(folder, { mode: 0o700 });
+
     await symlink(store.authFile, link);
   } catch {
     await dispose();

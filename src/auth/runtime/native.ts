@@ -1,10 +1,11 @@
 import { spawn } from 'node:child_process';
 
+import { AuthError } from '../contracts/errors.ts';
+import { loginUrl } from '../contracts/protocol.ts';
+import type { AuthEvent } from '../contracts/types.ts';
+
 import type { NativeAuthContext } from './context.ts';
-import { AuthError } from './errors.ts';
 import { LineBuffer } from './lines.ts';
-import { loginUrl } from './protocol.ts';
-import type { AuthEvent } from './types.ts';
 
 const MAX_NATIVE_OUTPUT_BYTES = 2_097_152;
 
@@ -32,6 +33,7 @@ export function runNativeAuth(command: NativeAuthCommand): Promise<NativeAuthRes
       env: command.context.env,
       stdio: ['ignore', 'pipe', 'pipe', command.lockFd],
     });
+
     const output = new NativeOutput(command.onEvent);
     let failed = false;
 
@@ -41,6 +43,7 @@ export function runNativeAuth(command: NativeAuthCommand): Promise<NativeAuthRes
       // Let the launcher exit so its parent's supervisor kills pipe-holding descendants.
       reject(new AuthError('operation-failed'));
     };
+
     const receive = (chunk: Buffer, stream: OutputStream) => {
       try {
         output.receive(chunk, stream);
@@ -52,6 +55,7 @@ export function runNativeAuth(command: NativeAuthCommand): Promise<NativeAuthRes
     child.stdout!.on('data', (chunk: Buffer) => receive(chunk, 'stdout'));
     child.stderr!.on('data', (chunk: Buffer) => receive(chunk, 'stderr'));
     child.once('error', fail);
+
     const timer = setTimeout(fail, command.timeoutMs);
 
     child.once('close', (code) => {
@@ -73,11 +77,13 @@ class NativeOutput {
     stdout: new TextDecoder('utf-8', { fatal: true }),
     stderr: new TextDecoder('utf-8'),
   };
+
   private readonly stdout: string[] = [];
   private readonly lines: Record<OutputStream, LineBuffer> = {
     stdout: new LineBuffer(),
     stderr: new LineBuffer(),
   };
+
   private bytes = 0;
   private announcedUrl: string | undefined;
 
@@ -93,7 +99,9 @@ class NativeOutput {
 
   private decode(chunk: Buffer | undefined, stream: OutputStream): void {
     const text = this.decoders[stream].decode(chunk, { stream: chunk !== undefined });
+
     if (stream === 'stdout') this.stdout.push(text);
+
     for (const line of this.lines[stream].push(text)) this.announce(line);
   }
 
@@ -102,6 +110,7 @@ class NativeOutput {
     this.decode(undefined, 'stderr');
     this.announce(this.lines.stdout.remainder);
     this.announce(this.lines.stderr.remainder);
+
     return this.stdout.join('');
   }
 

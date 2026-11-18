@@ -1,9 +1,12 @@
 import { dlopen, toArrayBuffer, type Pointer } from 'bun:ffi';
 
-import { readInt32 } from '../utils/index.ts';
-
-import { AuthError } from './errors.ts';
-import { AUDITED_BUN_VERSION, supportedPlatform, type SupportedPlatform } from './platform.ts';
+import { readInt32 } from '../../utils/index.ts';
+import { AuthError } from '../contracts/errors.ts';
+import {
+  AUDITED_BUN_VERSION,
+  supportedPlatform,
+  type SupportedPlatform,
+} from '../runtime/platform.ts';
 
 // flock(2) operation flags, and the errno values that mean "try again".
 const LOCK_EX = 2;
@@ -61,6 +64,7 @@ export class Libc {
 
     const { os, arch } = supportedPlatform();
     const errnoSymbol = os === 'darwin' ? '__error' : '__errno_location';
+
     for (const path of Libc.libraryPaths(os, arch)) {
       try {
         const { symbols } = dlopen(path, {
@@ -70,6 +74,7 @@ export class Libc {
           getpgid: { args: ['i32'], returns: 'i32' },
           [errnoSymbol]: { args: [], returns: 'ptr' },
         });
+
         const errnoLocation = symbols[errnoSymbol]!;
 
         return new Libc(
@@ -84,6 +89,7 @@ export class Libc {
         /* Try only the other audited platform loader. */
       }
     }
+
     throw new AuthError('unsupported-runtime');
   }
 
@@ -92,6 +98,7 @@ export class Libc {
     arch: SupportedPlatform['arch'],
   ): string[] {
     if (os === 'darwin') return ['/usr/lib/libSystem.B.dylib'];
+
     const musl = arch === 'arm64' ? '/lib/ld-musl-aarch64.so.1' : '/lib/ld-musl-x86_64.so.1';
     return ['libc.so.6', musl];
   }
