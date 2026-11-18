@@ -3,10 +3,12 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { readBounded } from '../utils/index.ts';
-import { MAX_OUTPUT, runProcess } from '../process/index.ts';
+import { MAX_OUTPUT, ProcessManager } from '../process/index.ts';
 
 import type { Agent, AgentRequest } from './types.ts';
 import {
+  AUDITED_CODEX_VERSION,
+  AUDITED_CODEX_VERSION_OUTPUT,
   DISABLED_FEATURES,
   packagedLauncher,
   REQUIRED_FLAGS,
@@ -14,6 +16,7 @@ import {
 } from './codex-helpers.ts';
 
 export class CodexAgent implements Agent {
+  private readonly processManager = new ProcessManager();
   version = '';
   private readonly launcher: string[];
 
@@ -30,7 +33,7 @@ export class CodexAgent implements Agent {
 
   async preflight(signal?: AbortSignal): Promise<void> {
     const probe = (args: string[]): Promise<string> =>
-      runProcess([...this.launcher, ...args], {
+      this.processManager.run([...this.launcher, ...args], {
         input: '',
         timeoutMs: 20_000,
         directory: tmpdir(),
@@ -38,9 +41,10 @@ export class CodexAgent implements Agent {
       });
 
     this.version = (await probe(['--version'])).trim();
-    // Fail closed on new CLI versions until their available tools and flags are audited.
-    if (this.version !== 'codex-cli 0.165.0')
-      throw new Error(`Unsupported Codex version: ${this.version}; audited version is 0.165.0`);
+    if (this.version !== AUDITED_CODEX_VERSION_OUTPUT)
+      throw new Error(
+        `Unsupported Codex version: ${this.version}; audited version is ${AUDITED_CODEX_VERSION}`,
+      );
 
     const help = await probe(['exec', '--help']);
     const features = await probe(['features', 'list']);
@@ -68,7 +72,7 @@ export class CodexAgent implements Agent {
         args.push('--output-schema', schemaPath);
       }
 
-      const events = await runProcess([...args, '-'], {
+      const events = await this.processManager.run([...args, '-'], {
         input: prompt,
         timeoutMs: this.timeout * 1000,
         directory,

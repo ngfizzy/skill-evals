@@ -1,0 +1,124 @@
+import { spawn } from 'node:child_process';
+
+import { AuthError } from '../contracts/errors.ts';
+import { loginUrl } from '../contracts/protocol.ts';
+import type { AuthEvent } from '../contracts/types.ts';
+
+import type { NativeAuthContext } from './context.ts';
+import { LineBuffer } from './lines.ts';
+
+const MAX_NATIVE_OUTPUT_BYTES = 2_097_152;
+
+export interface NativeAuthCommand {
+  executable: string;
+  args: string[];
+  context: NativeAuthContext;
+  // Passed to the child as fd 3 so the native process holds the lock for its whole lifetime.
+  lockFd: number;
+  timeoutMs: number;
+  onEvent?: (event: AuthEvent) => void;
+}
+
+export interface NativeAuthResult {
+  code: number | null;
+  stdout: string;
+}
+
+type OutputStream = 'stdout' | 'stderr';
+
+export function runNativeAuth(command: NativeAuthCommand): Promise<NativeAuthResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command.executable, command.args, {
+      cwd: command.context.directory,
+      env: command.context.env,
+      stdio: ['ignore', 'pipe', 'pipe', command.lockFd],
+    });
+
+    const output = new NativeOutput(command.onEvent);
+    let failed = false;
+
+    const fail = () => {
+      failed = true;
+      child.kill('SIGKILL');
+      // Let the launcher exit so its parent's supervisor kills pipe-holding descendants.
+      reject(new AuthError('operation-failed'));
+    };
+
+    const receive = (chunk: Buffer, stream: OutputStream) => {
+      try {
+        output.receive(chunk, stream);
+      } catch {
+        fail();
+      }
+    };
+
+    child.stdout!.on('data', (chunk: Buffer) => receive(chunk, 'stdout'));
+    child.stderr!.on('data', (chunk: Buffer) => receive(chunk, 'stderr'));
+    child.once('error', fail);
+
+    const timer = setTimeout(fail, command.timeoutMs);
+
+    child.once('close', (code) => {
+      clearTimeout(timer);
+      try {
+        if (failed) throw new AuthError('operation-failed');
+        resolve({ code, stdout: output.finish() });
+      } catch {
+        reject(new AuthError('operation-failed'));
+      }
+    });
+  });
+}
+
+// Collects stdout and announces login URLs from complete lines on either stream.
+// Native diagnostics are scanned for the URL only and never retained.
+class NativeOutput {
+  private readonly decoders = {
+    stdout: new TextDecoder('utf-8', { fatal: true }),
+    stderr: new TextDecoder('utf-8'),
+  };
+
+  private readonly stdout: string[] = [];
+  private readonly lines: Record<OutputStream, LineBuffer> = {
+    stdout: new LineBuffer(),
+    stderr: new LineBuffer(),
+  };
+
+  private bytes = 0;
+  private announcedUrl: string | undefined;
+
+  constructor(private readonly onEvent?: (event: AuthEvent) => void) {}
+
+  // Throws when output exceeds its bound or stdout is not valid UTF-8.
+  receive(chunk: Buffer, stream: OutputStream): void {
+    this.bytes += chunk.length;
+    if (this.bytes > MAX_NATIVE_OUTPUT_BYTES) throw new AuthError('operation-failed');
+
+    this.decode(chunk, stream);
+  }
+
+  private decode(chunk: Buffer | undefined, stream: OutputStream): void {
+    const text = this.decoders[stream].decode(chunk, { stream: chunk !== undefined });
+
+    if (stream === 'stdout') this.stdout.push(text);
+
+    for (const line of this.lines[stream].push(text)) this.announce(line);
+  }
+
+  finish(): string {
+    this.decode(undefined, 'stdout');
+    this.decode(undefined, 'stderr');
+    this.announce(this.lines.stdout.remainder);
+    this.announce(this.lines.stderr.remainder);
+
+    return this.stdout.join('');
+  }
+
+  private announce(text: string): void {
+    const url = loginUrl(text);
+    if (!url || url === this.announcedUrl) return;
+
+    this.announcedUrl = url;
+    this.onEvent?.({ type: 'login-url', url });
+  }
+}

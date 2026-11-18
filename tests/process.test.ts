@@ -1,19 +1,20 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
+import test from 'node:test';
 
-import type { ProcessOptions } from '../src/process/index.ts';
-import { runProcess } from '../src/process/index.ts';
+import { ProcessManager, ProcessTeardownError, type ProcessOptions } from '../src/process/index.ts';
 
 import { temporary } from './helpers/fixture.ts';
 
+const processManager = new ProcessManager();
+
 async function nodeRun(root: string, program: string, options: Partial<ProcessOptions> = {}) {
-  return runProcess([process.execPath, '-e', program], {
+  return processManager.run([process.execPath, '-e', program], {
     input: '',
     directory: root,
-    timeoutMs: 3000,
+    timeoutMs: 6000,
     ...options,
   });
 }
@@ -29,7 +30,7 @@ test('process stdin/stdout, spawn error, nonzero exit and bounded stderr diagnos
     /exited 7: deliberate diagnostic/,
   );
   await assert.rejects(
-    runProcess(['/missing/agent'], { input: '', directory: root, timeoutMs: 100 }),
+    processManager.run(['/missing/agent'], { input: '', directory: root, timeoutMs: 6000 }),
     /process error/,
   );
 });
@@ -45,23 +46,95 @@ test('bounds include timeout, combined streams and output emitted immediately be
     await assert.rejects(nodeRun(root, program), /output exceeded/);
 });
 
+test('stdout callbacks stream output and callback failure terminates the process', async (t) => {
+  const root = await temporary(t);
+  const chunks: Buffer[] = [];
+  const result = await nodeRun(root, 'process.stdout.write("streamed")', {
+    onStdout: (chunk) => chunks.push(chunk),
+  });
+  assert.equal(Buffer.concat(chunks).toString(), result);
+
+  await assert.rejects(
+    nodeRun(root, 'console.log("ready");setInterval(()=>{},1000)', {
+      onStdout() {
+        throw new Error('consumer failure');
+      },
+    }),
+    /Process output consumer failed/,
+  );
+});
+
+test('one manager keeps concurrent output and cancellation independent', async (t) => {
+  const root = await temporary(t);
+  const controller = new AbortController();
+  const interrupted = assert.rejects(
+    nodeRun(root, 'console.log("cancel-me");setInterval(()=>{},1000)', {
+      signal: controller.signal,
+      onStdout: () => controller.abort(),
+    }),
+    /interrupted/,
+  );
+  const successful = nodeRun(root, 'setTimeout(()=>process.stdout.write("survived"),100)');
+
+  const [, output] = await Promise.all([interrupted, successful]);
+  assert.equal(output, 'survived');
+});
+
+test('rejects when a detached child leaves output open after the supervisor exits', async (t) => {
+  const root = await temporary(t);
+  const program = `
+    const { spawn } = require('node:child_process');
+    const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 12000)'], {
+      detached: true,
+      stdio: 'inherit',
+    });
+    child.once('spawn', () => {
+      console.log(child.pid);
+      process.exit(0);
+    });
+  `;
+  let pid = 0;
+  t.after(() => {
+    if (Number.isSafeInteger(pid) && pid > 1) process.kill(pid, 'SIGKILL');
+  });
+
+  await assert.rejects(
+    nodeRun(root, program, {
+      onStdout: (chunk) => {
+        pid = Number(chunk.toString().trim());
+      },
+    }),
+    (error) =>
+      error instanceof ProcessTeardownError &&
+      /output remained open after exit/i.test(error.message),
+  );
+
+  assert.ok(Number.isSafeInteger(pid) && pid > 1);
+});
+
 for (const mode of ['timeout', 'leader-exit', 'abort'])
   test(`kills descendants on ${mode}`, async (t) => {
     const root = await temporary(t),
       pidPath = join(root, 'child.pid');
     const program = `const {spawn}=require('node:child_process'); const fs=require('node:fs');
     const child=spawn(process.execPath,['-e','setTimeout(()=>{},20000)'],{stdio:'inherit'});
-    fs.writeFileSync(${JSON.stringify(pidPath)},String(child.pid));
+    fs.writeFileSync(${JSON.stringify(pidPath)},String(child.pid)); console.log('child ready');
     ${mode === 'leader-exit' ? 'process.exit(0)' : 'setTimeout(()=>{},20000)'};`;
     const controller = new AbortController();
-    if (mode === 'abort') setTimeout(() => controller.abort(), 300);
     const promise = nodeRun(root, program, {
-      timeoutMs: mode === 'timeout' ? 300 : 3000,
+      timeoutMs: mode === 'timeout' ? 2000 : 6000,
       signal: controller.signal,
+      onStdout: () => {
+        if (mode === 'abort') controller.abort();
+      },
     });
     if (mode === 'leader-exit') await promise;
     else await assert.rejects(promise, mode === 'timeout' ? /timed out/ : /interrupted/);
     const pid = Number(await readFile(pidPath, 'utf8'));
+    if (process.platform === 'linux') {
+      assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
+      return;
+    }
     try {
       process.kill(pid, 0);
       const state = execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], {

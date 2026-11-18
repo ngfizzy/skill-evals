@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { CodexAgent } from '../src/adaptors/index.ts';
-import { runProcess } from '../src/process/index.ts';
+import { ProcessManager } from '../src/process/index.ts';
 
 // Explicit integration audit: the actual Codex request targets a localhost mock,
 // with OpenAI authentication disabled for that provider. Never record headers or
@@ -15,6 +15,7 @@ interface AuditRequest {
   effort?: string;
   tools: unknown[];
 }
+const processManager = new ProcessManager();
 const requests: AuditRequest[] = [];
 const server = http.createServer(async (request, response) => {
   try {
@@ -71,11 +72,13 @@ try {
     ])
       command.push('-c', config);
     // The mock intentionally ends each call with HTTP 400 after inspecting its schema.
-    await runProcess([...command, '-'], {
-      input: 'Reply ready. Synthetic tool-schema audit.',
-      directory,
-      timeoutMs: 20_000,
-    }).catch(() => {});
+    await processManager
+      .run([...command, '-'], {
+        input: 'Reply ready. Synthetic tool-schema audit.',
+        directory,
+        timeoutMs: 20_000,
+      })
+      .catch(() => {});
   }
   assert.equal(requests.length, 2, 'Expected two captured Responses requests');
   assert.deepEqual(

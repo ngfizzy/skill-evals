@@ -4,9 +4,11 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { isAuditedAuthPlatform } from '../src/auth/runtime/platform.ts';
+
 const temporary = mkdtempSync(join(tmpdir(), 'skill-evals-install-'));
-const execute = (command: string, args: string[], cwd: string): string => {
-  const result = spawnSync(command, args, { cwd, encoding: 'utf8', timeout: 120000 });
+const execute = (command: string, args: string[], cwd: string, env = process.env): string => {
+  const result = spawnSync(command, args, { cwd, env, encoding: 'utf8', timeout: 120000 });
   assert.ifError(result.error);
   assert.equal(result.status, 0, result.stderr + result.stdout);
   return result.stdout;
@@ -27,6 +29,7 @@ try {
       process.cwd(),
     ),
   );
+
   const prefix = join(temporary, 'installed');
   execute(
     'npm',
@@ -43,12 +46,17 @@ try {
     ],
     temporary,
   );
+
   const executable = join(prefix, 'node_modules', '.bin', 'skill-evals');
+
   assert.match(execute(executable, ['--help'], temporary), /Usage: skill-evals/);
+  assert.match(execute(executable, ['auth', '--help'], temporary), /login\|status\|logout/);
+
   const root = join(prefix, 'node_modules', 'skill-evals', 'examples', 'basic');
   const list = execute(executable, ['--root', root, '--list'], temporary);
   assert.match(list, /routing\/behavior-1/);
   assert.match(list, /caution\/proposed-review/);
+
   const scoped = execute(
     executable,
     ['--root', root, '--load-skill', 'routing', '--list'],
@@ -56,6 +64,7 @@ try {
   );
   assert.match(scoped, /routing\/behavior-1/);
   assert.doesNotMatch(scoped, /caution\/proposed-review/);
+
   const { writeFileSync } = await import('node:fs');
   const probe = join(prefix, 'import-contract.ts');
   writeFileSync(
@@ -69,6 +78,7 @@ for (const name of ['skill-evals', 'skill-evals/src/catalog/index.ts', 'skill-ev
   );
   execute(process.execPath, [probe], temporary);
   console.log('Installed package import boundary passed: root and deep imports rejected.');
+
   writeFileSync(
     probe,
     `import assert from 'node:assert/strict';
@@ -81,6 +91,41 @@ assert.equal(agent.version, 'codex-cli 0.165.0');
   );
   execute(process.execPath, ['--no-env-file', '--no-install', probe], temporary);
   console.log('Installed Codex preflight passed outside checkout with no Codex or Node on PATH.');
+
+  if (isAuditedAuthPlatform()) {
+    const data = join(temporary, 'auth-fixture');
+    const env = {
+      ...process.env,
+      HOME: data,
+      XDG_DATA_HOME: data,
+      CODEX_HOME: join(data, 'normal'),
+    };
+
+    assert.equal(execute(executable, ['auth', 'status'], temporary, env).trim(), 'signed-out');
+
+    const credentials = join(data, 'skill-evals', 'codex-auth', 'auth.json');
+    writeFileSync(
+      credentials,
+      JSON.stringify({
+        auth_mode: 'chatgpt',
+        tokens: {
+          id_token: 'synthetic-id',
+          access_token: 'synthetic-access',
+          refresh_token: 'synthetic-refresh',
+        },
+      }),
+      { mode: 0o600 },
+    );
+
+    assert.equal(execute(executable, ['auth', 'status'], temporary, env).trim(), 'signed-in');
+    assert.equal(execute(executable, ['auth', 'logout'], temporary, env).trim(), 'signed-out');
+    assert.equal(await Bun.file(credentials).exists(), false);
+
+    console.log('Installed CLI auth status and logout passed using a separate synthetic store.');
+  } else {
+    console.log('Installed auth smoke skipped outside the audited platform matrix.');
+  }
+
   writeFileSync(
     probe,
     `import assert from 'node:assert/strict';

@@ -1,7 +1,7 @@
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { ProcessTimeoutError, runProcess } from '../process/index.ts';
+import { ProcessTimeoutError, ProcessManager } from '../process/index.ts';
 
 import type { GitRootInput } from './types.ts';
 
@@ -14,6 +14,7 @@ interface GitRunOptions {
 }
 
 export class GitCommand {
+  private readonly processManager = new ProcessManager();
   private readonly trustedEnv = gitEnvironment();
   private readonly isolatedEnv = {
     ...this.trustedEnv,
@@ -59,7 +60,7 @@ export class GitCommand {
 
   async run(stage: string, args: string[], options: GitRunOptions = {}): Promise<string> {
     try {
-      return await runProcess([this.executable, ...args], {
+      return await this.processManager.run([this.executable, ...args], {
         directory: this.directory,
         signal: this.signal,
         input: '',

@@ -11,6 +11,7 @@
   "files": [
     "src/cli.ts",
     "src/adaptors/*.ts",
+    "src/auth/**/*.ts",
     "src/catalog/*.ts",
     "src/display/*.ts",
     "src/display/*.tsx",
@@ -26,6 +27,7 @@
     "src/report/*.ts",
     "src/runner/*.ts",
     "src/sources/*.ts",
+    "src/utils/binary.ts",
     "src/utils/files.ts",
     "src/utils/index.ts",
     "src/utils/message.ts",
@@ -58,6 +60,7 @@
     "pack:check": "bun --no-env-file scripts/check-pack.ts",
     "install:check": "bun --no-env-file scripts/check-install.ts",
     "audit:codex": "bun --no-env-file scripts/audit-codex.ts",
+    "audit:auth-lock": "bun --no-env-file scripts/audit-auth-lock.ts",
     "parity:ruby": "bun --no-env-file scripts/compare-ruby.ts"
   },
   "dependencies": {

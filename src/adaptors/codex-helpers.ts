@@ -2,6 +2,10 @@ import { createRequire } from 'node:module';
 
 import { mapping } from '../utils/index.ts';
 
+// Fail closed on other Codex versions until their tools, flags and isolation surface are audited.
+export const AUDITED_CODEX_VERSION = '0.165.0';
+export const AUDITED_CODEX_VERSION_OUTPUT = `codex-cli ${AUDITED_CODEX_VERSION}`;
+
 export function validateEvents(events: string): void {
   let completed = false;
   let message = false;

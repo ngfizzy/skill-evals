@@ -52,6 +52,11 @@ as reference context, plus scenario, candidate response and criteria, including 
 quota; including the skill bundle also adds input tokens to the judge call. Live calls are never
 part of `bun test`.
 
+Use `skill-evals auth login` to create a dedicated ChatGPT login. The command prints the official
+sign-in URL. Use `skill-evals auth status` to check the local store and `skill-evals auth logout` to
+remove its credentials. Evaluation runs still use the existing Codex login. See the
+[authentication store and supported platforms](docs/adapter.md#dedicated-authentication-service).
+
 ## Cases and dependencies
 
 A root contains `skills/NAME/SKILL.md` and either `eval.yaml` or `evals/evals.json`. See the
